@@ -89,11 +89,14 @@ export default function App() {
   // User Authentication & Profile State
   const [session, setSession] = useState(null);
   const [profile, setProfile] = useState(null);
-  const [authMode, setAuthMode] = useState('login'); // 'login' | 'signup'
+  const [authMode, setAuthMode] = useState('login'); // 'login' | 'signup' | 'forgot' | 'reset'
   const [authEmail, setAuthEmail] = useState('');
   const [authPassword, setAuthPassword] = useState('');
+  const [newPassword, setNewPassword] = useState('');
   const [authUsername, setAuthUsername] = useState('');
+  const [showPassword, setShowPassword] = useState(false);
   const [authError, setAuthError] = useState('');
+  const [authSuccess, setAuthSuccess] = useState('');
   const [authLoading, setAuthLoading] = useState(false);
 
   // Navigation & Sidebar State
@@ -132,17 +135,22 @@ export default function App() {
     EPL: { name: 'English Premier League', defaultRound: 12 },
   };
 
-  // 1. Check active login session on load
+  // 1. Check active login session & password recovery redirects
   useEffect(() => {
     supabase.auth.getSession().then(({ data: { session } }) => {
       setSession(session);
-      if (session?.user) fetchUserProfileAndLeagues(session.user.id);
+      if (session?.user) fetchUserProfileAndLeagues(session.user);
     });
 
-    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((event, session) => {
+      if (event === 'PASSWORD_RECOVERY') {
+        setAuthMode('reset');
+        setAuthError('');
+        setAuthSuccess('');
+      }
       setSession(session);
       if (session?.user) {
-        fetchUserProfileAndLeagues(session.user.id);
+        fetchUserProfileAndLeagues(session.user);
       } else {
         setProfile(null);
         setMyLeagues([]);
@@ -153,50 +161,122 @@ export default function App() {
     return () => subscription.unsubscribe();
   }, []);
 
-  async function fetchUserProfileAndLeagues(userId) {
-    const { data: prof } = await supabase
+  // Auto-heals missing profile row if user signed up before trigger was added
+  async function fetchUserProfileAndLeagues(user) {
+    if (!user?.id) return;
+
+    let { data: prof } = await supabase
       .from('profiles')
       .select('*')
-      .eq('id', userId)
-      .single();
-    if (prof) setProfile(prof);
+      .eq('id', user.id)
+      .maybeSingle();
+
+    if (!prof) {
+      const fallbackName =
+        user.user_metadata?.username ||
+        (user.email ? user.email.split('@')[0] : 'Player');
+
+      const { data: createdProf } = await supabase
+        .from('profiles')
+        .upsert({ id: user.id, username: fallbackName })
+        .select()
+        .maybeSingle();
+
+      prof = createdProf || { id: user.id, username: fallbackName };
+    }
+
+    setProfile(prof);
 
     const { data: memberships } = await supabase
       .from('league_members')
       .select('*, leagues(*)')
-      .eq('user_id', userId);
+      .eq('user_id', user.id);
 
     if (memberships) {
       setMyLeagues(memberships);
     }
   }
 
-  // Handle Login / Sign Up
+  // Handle Login, Sign Up, Forgot Password, and Set New Password
   const handleAuthSubmit = async (e) => {
     e.preventDefault();
     setAuthError('');
+    setAuthSuccess('');
     setAuthLoading(true);
 
-    if (authMode === 'signup') {
-      if (!authUsername.trim()) {
-        setAuthError('Please enter a display name.');
+    try {
+      if (authMode === 'forgot') {
+        const { error } = await supabase.auth.resetPasswordForEmail(authEmail.trim(), {
+          redirectTo: window.location.origin,
+        });
+        if (error) {
+          setAuthError(error.message);
+        } else {
+          setAuthSuccess('Password reset link sent! Check your email inbox (and spam folder).');
+        }
         setAuthLoading(false);
         return;
       }
-      const { error } = await supabase.auth.signUp({
-        email: authEmail.trim(),
-        password: authPassword,
-        options: { data: { username: authUsername.trim() } }
-      });
-      if (error) setAuthError(error.message);
-    } else {
-      const { error } = await supabase.auth.signInWithPassword({
-        email: authEmail.trim(),
-        password: authPassword
-      });
-      if (error) setAuthError(error.message);
+
+      if (authMode === 'reset') {
+        const { error } = await supabase.auth.updateUser({
+          password: newPassword,
+        });
+        if (error) {
+          setAuthError(error.message);
+        } else {
+          setAuthSuccess('Password updated! Entering your dashboard...');
+          setNewPassword('');
+          setTimeout(() => {
+            setAuthMode('login');
+            setAuthSuccess('');
+          }, 1200);
+        }
+        setAuthLoading(false);
+        return;
+      }
+
+      if (authMode === 'signup') {
+        if (!authUsername.trim()) {
+          setAuthError('Please enter a display name.');
+          setAuthLoading(false);
+          return;
+        }
+        const { data, error } = await supabase.auth.signUp({
+          email: authEmail.trim(),
+          password: authPassword,
+          options: { data: { username: authUsername.trim() } }
+        });
+
+        if (error) {
+          setAuthError(error.message);
+        } else if (data?.user && !data?.session) {
+          // Email confirmation is turned ON in Supabase
+          setAuthSuccess(
+            'Account created! Please check your email inbox and click the confirmation link to log in.'
+          );
+        } else if (data?.session) {
+          setSession(data.session);
+          await fetchUserProfileAndLeagues(data.session.user);
+        }
+      } else {
+        const { data, error } = await supabase.auth.signInWithPassword({
+          email: authEmail.trim(),
+          password: authPassword
+        });
+
+        if (error) {
+          setAuthError(error.message);
+        } else if (data?.session) {
+          setSession(data.session);
+          await fetchUserProfileAndLeagues(data.session.user);
+        }
+      }
+    } catch (err) {
+      setAuthError(err?.message || 'Unexpected authentication error. Check your connection.');
+    } finally {
+      setAuthLoading(false);
     }
-    setAuthLoading(false);
   };
 
   const handleSignOut = async () => {
@@ -377,7 +457,7 @@ export default function App() {
       return;
     }
 
-    await fetchUserProfileAndLeagues(session.user.id);
+    await fetchUserProfileAndLeagues(session.user);
 
     setActiveEntry({
       league: comp.sport || formSport,
@@ -428,7 +508,7 @@ export default function App() {
       return;
     }
 
-    await fetchUserProfileAndLeagues(session.user.id);
+    await fetchUserProfileAndLeagues(session.user);
 
     setActiveEntry({
       league: comp.sport || 'NRL',
@@ -445,9 +525,9 @@ export default function App() {
   };
 
   // =========================================================================
-  // VIEW 0: PLAYER LOGIN / PROFILE CREATION GATE
+  // VIEW 0: PLAYER LOGIN / SIGN UP / FORGOT & RESET PASSWORD GATE
   // =========================================================================
-  if (!session) {
+  if (!session || authMode === 'reset') {
     return (
       <div className="min-h-screen bg-[radial-gradient(ellipse_at_top,_var(--tw-gradient-stops))] from-blue-950 via-slate-950 to-black text-slate-100 flex items-center justify-center p-6 font-sans">
         <div className="max-w-md w-full bg-slate-900 border border-slate-800 rounded-2xl p-8 shadow-2xl">
@@ -458,7 +538,10 @@ export default function App() {
             <div>
               <h1 className="text-xl font-black tracking-wide text-white">LAST MAN STANDING</h1>
               <p className="text-xs text-slate-400">
-                {authMode === 'login' ? 'Sign in to submit your tips' : 'Create your player profile'}
+                {authMode === 'login' && 'Sign in to submit your tips'}
+                {authMode === 'signup' && 'Create your player profile'}
+                {authMode === 'forgot' && 'Enter your email to reset your password'}
+                {authMode === 'reset' && 'Choose a new password for your account'}
               </p>
             </div>
           </div>
@@ -467,6 +550,13 @@ export default function App() {
             <div className="p-3 mb-4 bg-rose-950/50 border border-rose-800 text-rose-300 text-xs rounded-lg flex items-center gap-2">
               <AlertCircle className="w-4 h-4 shrink-0" />
               <span>{authError}</span>
+            </div>
+          )}
+
+          {authSuccess && (
+            <div className="p-3 mb-4 bg-emerald-950/50 border border-emerald-800 text-emerald-300 text-xs rounded-lg flex items-center gap-2">
+              <CheckCircle2 className="w-4 h-4 shrink-0" />
+              <span>{authSuccess}</span>
             </div>
           )}
 
@@ -487,34 +577,91 @@ export default function App() {
               </div>
             )}
 
-            <div>
-              <label className="text-xs font-bold uppercase tracking-wider text-slate-400 block mb-1">
-                Email Address
-              </label>
-              <input
-                type="email"
-                required
-                placeholder="you@example.com"
-                value={authEmail}
-                onChange={(e) => setAuthEmail(e.target.value)}
-                className="w-full bg-slate-950 border border-slate-800 rounded-xl p-3 text-sm text-white placeholder-slate-600 focus:outline-none focus:border-blue-500"
-              />
-            </div>
+            {authMode !== 'reset' && (
+              <div>
+                <label className="text-xs font-bold uppercase tracking-wider text-slate-400 block mb-1">
+                  Email Address
+                </label>
+                <input
+                  type="email"
+                  required
+                  autoComplete="email"
+                  placeholder="you@example.com"
+                  value={authEmail}
+                  onChange={(e) => setAuthEmail(e.target.value)}
+                  className="w-full bg-slate-950 border border-slate-800 rounded-xl p-3 text-sm text-white placeholder-slate-600 focus:outline-none focus:border-blue-500"
+                />
+              </div>
+            )}
 
-            <div>
-              <label className="text-xs font-bold uppercase tracking-wider text-slate-400 block mb-1">
-                Password
-              </label>
-              <input
-                type="password"
-                required
-                minLength={6}
-                placeholder="Minimum 6 characters"
-                value={authPassword}
-                onChange={(e) => setAuthPassword(e.target.value)}
-                className="w-full bg-slate-950 border border-slate-800 rounded-xl p-3 text-sm text-white placeholder-slate-600 focus:outline-none focus:border-blue-500"
-              />
-            </div>
+            {(authMode === 'login' || authMode === 'signup') && (
+              <div>
+                <div className="flex items-center justify-between mb-1">
+                  <label className="text-xs font-bold uppercase tracking-wider text-slate-400">
+                    Password
+                  </label>
+                  {authMode === 'login' && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setAuthMode('forgot');
+                        setAuthError('');
+                        setAuthSuccess('');
+                      }}
+                      className="text-xs text-blue-400 hover:underline font-medium"
+                    >
+                      Forgot password?
+                    </button>
+                  )}
+                </div>
+                <div className="relative">
+                  <input
+                    type={showPassword ? 'text' : 'password'}
+                    required
+                    minLength={6}
+                    autoComplete={authMode === 'login' ? 'current-password' : 'new-password'}
+                    placeholder="Minimum 6 characters"
+                    value={authPassword}
+                    onChange={(e) => setAuthPassword(e.target.value)}
+                    className="w-full bg-slate-950 border border-slate-800 rounded-xl p-3 pr-10 text-sm text-white placeholder-slate-600 focus:outline-none focus:border-blue-500"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setShowPassword(!showPassword)}
+                    className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-white"
+                    title={showPassword ? 'Hide password' : 'Show password'}
+                  >
+                    {showPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {authMode === 'reset' && (
+              <div>
+                <label className="text-xs font-bold uppercase tracking-wider text-slate-400 block mb-1">
+                  New Password
+                </label>
+                <div className="relative">
+                  <input
+                    type={showPassword ? 'text' : 'password'}
+                    required
+                    minLength={6}
+                    placeholder="Enter new password (min 6 characters)"
+                    value={newPassword}
+                    onChange={(e) => setNewPassword(e.target.value)}
+                    className="w-full bg-slate-950 border border-slate-800 rounded-xl p-3 pr-10 text-sm text-white placeholder-slate-600 focus:outline-none focus:border-blue-500"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setShowPassword(!showPassword)}
+                    className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-white"
+                  >
+                    {showPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                  </button>
+                </div>
+              </div>
+            )}
 
             <button
               type="submit"
@@ -525,22 +672,43 @@ export default function App() {
                 ? 'Please wait...'
                 : authMode === 'login'
                 ? 'Sign In'
-                : 'Create Profile & Enter'}
+                : authMode === 'signup'
+                ? 'Create Profile & Enter'
+                : authMode === 'forgot'
+                ? 'Send Password Reset Email'
+                : 'Save New Password'}
             </button>
           </form>
 
-          <div className="mt-6 text-center text-xs text-slate-400">
-            {authMode === 'login' ? "Don't have a player profile yet?" : 'Already registered?'}{' '}
-            <button
-              type="button"
-              onClick={() => {
-                setAuthMode(authMode === 'login' ? 'signup' : 'login');
-                setAuthError('');
-              }}
-              className="text-blue-400 font-bold hover:underline"
-            >
-              {authMode === 'login' ? 'Sign Up' : 'Log In'}
-            </button>
+          <div className="mt-6 text-center text-xs text-slate-400 space-y-2">
+            {authMode === 'forgot' ? (
+              <button
+                type="button"
+                onClick={() => {
+                  setAuthMode('login');
+                  setAuthError('');
+                  setAuthSuccess('');
+                }}
+                className="text-blue-400 font-bold hover:underline"
+              >
+                &larr; Back to Sign In
+              </button>
+            ) : authMode !== 'reset' ? (
+              <div>
+                {authMode === 'login' ? "Don't have a player profile yet?" : 'Already registered?'}{' '}
+                <button
+                  type="button"
+                  onClick={() => {
+                    setAuthMode(authMode === 'login' ? 'signup' : 'login');
+                    setAuthError('');
+                    setAuthSuccess('');
+                  }}
+                  className="text-blue-400 font-bold hover:underline"
+                >
+                  {authMode === 'login' ? 'Sign Up' : 'Log In'}
+                </button>
+              </div>
+            ) : null}
           </div>
         </div>
       </div>
