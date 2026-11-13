@@ -21,6 +21,70 @@ import {
   EyeOff
 } from 'lucide-react';
 
+const FALLBACK_TEAMS = {
+  NRL: [
+    { id: 'nrl-1', name: 'Brisbane Broncos', short_code: 'BRI', league: 'NRL' },
+    { id: 'nrl-2', name: 'Canberra Raiders', short_code: 'CAN', league: 'NRL' },
+    { id: 'nrl-3', name: 'Canterbury-Bankstown Bulldogs', short_code: 'CBY', league: 'NRL' },
+    { id: 'nrl-4', name: 'Cronulla-Sutherland Sharks', short_code: 'CRO', league: 'NRL' },
+    { id: 'nrl-5', name: 'Dolphins', short_code: 'DOL', league: 'NRL' },
+    { id: 'nrl-6', name: 'Gold Coast Titans', short_code: 'GLD', league: 'NRL' },
+    { id: 'nrl-7', name: 'Manly Warringah Sea Eagles', short_code: 'MAN', league: 'NRL' },
+    { id: 'nrl-8', name: 'Melbourne Storm', short_code: 'MST', league: 'NRL' },
+    { id: 'nrl-9', name: 'New Zealand Warriors', short_code: 'NZW', league: 'NRL' },
+    { id: 'nrl-10', name: 'Newcastle Knights', short_code: 'NCL', league: 'NRL' },
+    { id: 'nrl-11', name: 'North Queensland Cowboys', short_code: 'NQL', league: 'NRL' },
+    { id: 'nrl-12', name: 'Parramatta Eels', short_code: 'PAR', league: 'NRL' },
+    { id: 'nrl-13', name: 'Penrith Panthers', short_code: 'PEN', league: 'NRL' },
+    { id: 'nrl-14', name: 'South Sydney Rabbitohs', short_code: 'SOU', league: 'NRL' },
+    { id: 'nrl-15', name: 'St. George Illawarra Dragons', short_code: 'SGI', league: 'NRL' },
+    { id: 'nrl-16', name: 'Sydney Roosters', short_code: 'SYR', league: 'NRL' },
+    { id: 'nrl-17', name: 'Wests Tigers', short_code: 'WST', league: 'NRL' }
+  ],
+  AFL: [
+    { id: 'afl-1', name: 'Adelaide Crows', short_code: 'ADE', league: 'AFL' },
+    { id: 'afl-2', name: 'Brisbane Lions', short_code: 'BRL', league: 'AFL' },
+    { id: 'afl-3', name: 'Carlton Blues', short_code: 'CAR', league: 'AFL' },
+    { id: 'afl-4', name: 'Collingwood Magpies', short_code: 'COL', league: 'AFL' },
+    { id: 'afl-5', name: 'Essendon Bombers', short_code: 'ESS', league: 'AFL' },
+    { id: 'afl-6', name: 'Fremantle Dockers', short_code: 'FRE', league: 'AFL' },
+    { id: 'afl-7', name: 'Geelong Cats', short_code: 'GEE', league: 'AFL' },
+    { id: 'afl-8', name: 'Gold Coast Suns', short_code: 'GCS', league: 'AFL' },
+    { id: 'afl-9', name: 'GWS Giants', short_code: 'GWS', league: 'AFL' },
+    { id: 'afl-10', name: 'Hawthorn Hawks', short_code: 'HAW', league: 'AFL' },
+    { id: 'afl-11', name: 'Melbourne Demons', short_code: 'MEL', league: 'AFL' },
+    { id: 'afl-12', name: 'North Melbourne Kangaroos', short_code: 'NTH', league: 'AFL' },
+    { id: 'afl-13', name: 'Port Adelaide Power', short_code: 'PTA', league: 'AFL' },
+    { id: 'afl-14', name: 'Richmond Tigers', short_code: 'RIC', league: 'AFL' },
+    { id: 'afl-15', name: 'St Kilda Saints', short_code: 'STK', league: 'AFL' },
+    { id: 'afl-16', name: 'Sydney Swans', short_code: 'SYD', league: 'AFL' },
+    { id: 'afl-17', name: 'West Coast Eagles', short_code: 'WCE', league: 'AFL' },
+    { id: 'afl-18', name: 'Western Bulldogs', short_code: 'WBD', league: 'AFL' }
+  ],
+  EPL: [
+    { id: 'epl-1', name: 'AFC Bournemouth', short_code: 'BOU', league: 'EPL' },
+    { id: 'epl-2', name: 'Arsenal', short_code: 'ARS', league: 'EPL' },
+    { id: 'epl-3', name: 'Aston Villa', short_code: 'AVL', league: 'EPL' },
+    { id: 'epl-4', name: 'Brentford', short_code: 'BRE', league: 'EPL' },
+    { id: 'epl-5', name: 'Brighton & Hove Albion', short_code: 'BHA', league: 'EPL' },
+    { id: 'epl-6', name: 'Chelsea', short_code: 'CHE', league: 'EPL' },
+    { id: 'epl-7', name: 'Coventry City', short_code: 'COV', league: 'EPL' },
+    { id: 'epl-8', name: 'Crystal Palace', short_code: 'CRY', league: 'EPL' },
+    { id: 'epl-9', name: 'Everton', short_code: 'EVE', league: 'EPL' },
+    { id: 'epl-10', name: 'Fulham', short_code: 'FUL', league: 'EPL' },
+    { id: 'epl-11', name: 'Hull City', short_code: 'HUL', league: 'EPL' },
+    { id: 'epl-12', name: 'Ipswich Town', short_code: 'IPS', league: 'EPL' },
+    { id: 'epl-13', name: 'Leeds United', short_code: 'LEE', league: 'EPL' },
+    { id: 'epl-14', name: 'Liverpool', short_code: 'LIV', league: 'EPL' },
+    { id: 'epl-15', name: 'Manchester City', short_code: 'MCI', league: 'EPL' },
+    { id: 'epl-16', name: 'Manchester United', short_code: 'MUN', league: 'EPL' },
+    { id: 'epl-17', name: 'Newcastle United', short_code: 'NEW', league: 'EPL' },
+    { id: 'epl-18', name: 'Nottingham Forest', short_code: 'NFO', league: 'EPL' },
+    { id: 'epl-19', name: 'Sunderland', short_code: 'SUN', league: 'EPL' },
+    { id: 'epl-20', name: 'Tottenham Hotspur', short_code: 'TOT', league: 'EPL' }
+  ]
+};
+
 export default function App() {
   // User Authentication & Profile State
   const [session, setSession] = useState(null);
@@ -48,24 +112,24 @@ export default function App() {
   // Form Inputs for Custom League
   const [formCompName, setFormCompName] = useState('');
   const [formInviteCode, setFormInviteCode] = useState('');
-  const [formSport, setFormSport] = useState('EPL');
+  const [formSport, setFormSport] = useState('NRL');
   const [formLives, setFormLives] = useState(3);
   const [formError, setFormError] = useState('');
 
   // Game & Leaderboard State
   const [teams, setTeams] = useState([]);
-  const [picks, setPicks] = useState([]); // Current user's picks
-  const [leagueMembers, setLeagueMembers] = useState([]); // All members in active comp
-  const [allLeaguePicks, setAllLeaguePicks] = useState([]); // All picks across league
-  const [revealCurrentRound, setRevealCurrentRound] = useState(false); // Toggle round kick-off visibility
+  const [picks, setPicks] = useState([]);
+  const [leagueMembers, setLeagueMembers] = useState([]);
+  const [allLeaguePicks, setAllLeaguePicks] = useState([]);
+  const [revealCurrentRound, setRevealCurrentRound] = useState(false);
   const [currentRound, setCurrentRound] = useState(1);
   const [loading, setLoading] = useState(false);
   const [statusMessage, setStatusMessage] = useState('');
 
   const LEAGUE_CONFIG = {
-    EPL: { name: 'English Premier League', defaultRound: 12 },
-    AFL: { name: 'Australian Football League', defaultRound: 1 },
     NRL: { name: 'National Rugby League', defaultRound: 1 },
+    AFL: { name: 'Australian Football League', defaultRound: 1 },
+    EPL: { name: 'English Premier League', defaultRound: 12 },
   };
 
   // 1. Check active login session on load
@@ -90,7 +154,6 @@ export default function App() {
   }, []);
 
   async function fetchUserProfileAndLeagues(userId) {
-    // Load Profile
     const { data: prof } = await supabase
       .from('profiles')
       .select('*')
@@ -98,7 +161,6 @@ export default function App() {
       .single();
     if (prof) setProfile(prof);
 
-    // Load all leagues this player belongs to
     const { data: memberships } = await supabase
       .from('league_members')
       .select('*, leagues(*)')
@@ -158,7 +220,7 @@ export default function App() {
 
     async function loadTournamentData() {
       setLoading(true);
-      const sportCode = activeEntry.league || 'EPL';
+      const sportCode = activeEntry.league || 'NRL';
 
       const { data: teamsData, error: teamsError } = await supabase
         .from('teams')
@@ -166,14 +228,15 @@ export default function App() {
         .eq('league', sportCode)
         .order('name');
 
-      if (!teamsError && teamsData) {
+      if (!teamsError && teamsData && teamsData.length > 0) {
         setTeams(teamsData);
+      } else {
+        setTeams(FALLBACK_TEAMS[sportCode] || []);
       }
 
       const defaultRnd = LEAGUE_CONFIG[sportCode]?.defaultRound || 1;
       setCurrentRound(defaultRnd);
 
-      // If this is a database league, fetch members and picks
       if (activeEntry.compId) {
         await refreshLeagueBoard(activeEntry.compId);
       }
@@ -200,7 +263,6 @@ export default function App() {
 
     if (membersRes.data) {
       setLeagueMembers(membersRes.data);
-      // Keep current user's remaining lives synced
       const me = membersRes.data.find((m) => m.user_id === session?.user?.id);
       if (me) {
         setActiveEntry((prev) => (prev ? { ...prev, remainingLives: me.lives } : prev));
@@ -209,7 +271,6 @@ export default function App() {
 
     if (picksRes.data) {
       setAllLeaguePicks(picksRes.data);
-      // Filter current user's picks for burned-team tracking
       const myPicks = picksRes.data
         .filter((p) => p.user_id === session?.user?.id)
         .map((p) => ({
@@ -225,7 +286,7 @@ export default function App() {
   const pickedTeamIds = new Set(picks.map((p) => p.team_id));
   const activeRoundPick = picks.find((p) => p.round === currentRound);
 
-  // Lock in a team pick (saves to Supabase if inside a league)
+  // Lock in a team pick
   const handleSelectTeam = async (team, fixtureText) => {
     if (activeEntry.remainingLives <= 0) {
       setStatusMessage('Eliminated: No remaining lives.');
@@ -237,7 +298,6 @@ export default function App() {
       return;
     }
 
-    // Optimistic UI update
     const updated = picks.filter((p) => p.round !== currentRound);
     setPicks([
       ...updated,
@@ -249,7 +309,6 @@ export default function App() {
       }
     ]);
 
-    // Save to Supabase if in a multiplayer league
     if (activeEntry.compId && session?.user?.id) {
       const { error } = await supabase.from('picks').upsert(
         {
@@ -270,7 +329,7 @@ export default function App() {
       await refreshLeagueBoard(activeEntry.compId);
     }
 
-    setStatusMessage(`Locked in ${team.name} (${fixtureText}) for Round${currentRound}.`);
+    setStatusMessage(`Locked in ${team.name} (${fixtureText}) for Round ${currentRound}.`);
   };
 
   // Create League in 'leagues' table + auto-join creator in 'league_members'
@@ -290,6 +349,7 @@ export default function App() {
       .insert([
         {
           name: formCompName.trim(),
+          sport: formSport,
           invite_code: generatedCode,
           starting_lives: formLives,
           created_by: session.user.id
@@ -303,7 +363,6 @@ export default function App() {
       return;
     }
 
-    // Auto-join creator as player #1
     const { error: memberErr } = await supabase.from('league_members').insert([
       {
         league_id: comp.id,
@@ -321,7 +380,7 @@ export default function App() {
     await fetchUserProfileAndLeagues(session.user.id);
 
     setActiveEntry({
-      league: formSport,
+      league: comp.sport || formSport,
       totalLives: comp.starting_lives,
       remainingLives: comp.starting_lives,
       compName: comp.name,
@@ -372,7 +431,7 @@ export default function App() {
     await fetchUserProfileAndLeagues(session.user.id);
 
     setActiveEntry({
-      league: formSport,
+      league: comp.sport || 'NRL',
       totalLives: comp.starting_lives,
       remainingLives: comp.starting_lives,
       compName: comp.name,
@@ -489,14 +548,11 @@ export default function App() {
   }
 
   const isSidebarOpen = sidebarHovered || sidebarPinned;
-
-  // Build horizontal rounds list (e.g., R1 to R15 or up to currentRound + 2)
   const maxRoundDisplay = Math.max(currentRound + 2, 12);
   const horizontalRounds = Array.from({ length: maxRoundDisplay }, (_, i) => i + 1);
 
   return (
     <div className="min-h-screen bg-[radial-gradient(ellipse_at_top,_var(--tw-gradient-stops))] from-blue-950 via-slate-950 to-black text-slate-100 flex relative overflow-x-hidden font-sans">
-      {/* Proximity trigger zone on left screen border */}
       <div
         onMouseEnter={() => setSidebarHovered(true)}
         className="fixed top-0 left-0 w-4 h-full z-40 cursor-pointer"
@@ -584,7 +640,6 @@ export default function App() {
               </button>
             </div>
 
-            {/* Saved Leagues List in Sidebar */}
             {myLeagues.length > 0 && isSidebarOpen && (
               <div className="mt-6 space-y-1.5 border-t border-slate-800 pt-4">
                 <div className="text-[10px] font-bold uppercase tracking-wider text-slate-500 px-2 mb-2">
@@ -595,7 +650,7 @@ export default function App() {
                     key={m.id}
                     onClick={() =>
                       setActiveEntry({
-                        league: 'EPL',
+                        league: m.leagues?.sport || 'NRL',
                         totalLives: m.leagues?.starting_lives || 1,
                         remainingLives: m.lives,
                         compName: m.leagues?.name,
@@ -610,7 +665,10 @@ export default function App() {
                         : 'bg-slate-950/60 border-slate-800 text-slate-300 hover:border-slate-600'
                     }`}
                   >
-                    <span className="truncate">{m.leagues?.name}</span>
+                    <div className="truncate text-left">
+                      <div className="truncate">{m.leagues?.name}</div>
+                      <div className="text-[10px] text-slate-500">{m.leagues?.sport || 'NRL'}</div>
+                    </div>
                     <span className="text-rose-400 flex items-center gap-1 shrink-0">
                       {m.lives} <Heart className="w-3 h-3 fill-rose-500" />
                     </span>
@@ -623,7 +681,7 @@ export default function App() {
               <div className="mt-6 space-y-4 border-t border-slate-800 pt-5">
                 <div>
                   <span className="text-[10px] font-bold uppercase tracking-wider text-blue-400">
-                    {activeEntry.compName ? 'Private League' : 'Solo Mode'}
+                    {activeEntry.compName ? `${activeEntry.league} Private League` : `${activeEntry.league} Solo`}
                   </span>
                   <h3 className="text-lg font-black text-white truncate">
                     {activeEntry.compName || activeEntry.league}
@@ -728,7 +786,6 @@ export default function App() {
                 </div>
               </div>
 
-              {/* Quick Buttons: Create or Join */}
               <div className="grid grid-cols-2 gap-3 mb-6">
                 <button
                   onClick={() => {
@@ -753,7 +810,6 @@ export default function App() {
                 </button>
               </div>
 
-              {/* Saved Leagues Quick-Select */}
               {myLeagues.length > 0 && (
                 <div className="mb-6">
                   <div className="text-xs font-bold uppercase tracking-wider text-slate-400 mb-2">
@@ -765,7 +821,7 @@ export default function App() {
                         key={m.id}
                         onClick={() =>
                           setActiveEntry({
-                            league: 'EPL',
+                            league: m.leagues?.sport || 'NRL',
                             totalLives: m.leagues?.starting_lives || 1,
                             remainingLives: m.lives,
                             compName: m.leagues?.name,
@@ -777,8 +833,13 @@ export default function App() {
                         className="w-full flex items-center justify-between p-4 rounded-xl bg-slate-950 border border-slate-800 hover:border-blue-500 transition text-left"
                       >
                         <div>
-                          <div className="font-bold text-white">{m.leagues?.name}</div>
-                          <div className="text-xs text-slate-400 font-mono">
+                          <div className="flex items-center gap-2">
+                            <span className="font-bold text-white">{m.leagues?.name}</span>
+                            <span className="text-[10px] font-bold px-2 py-0.5 rounded bg-slate-800 text-blue-300">
+                              {m.leagues?.sport || 'NRL'}
+                            </span>
+                          </div>
+                          <div className="text-xs text-slate-400 font-mono mt-0.5">
                             Invite Code: {m.leagues?.invite_code}
                           </div>
                         </div>
@@ -867,9 +928,6 @@ export default function App() {
         ) : (
           /* View 2: Active League Standings + Team Selection Dashboard */
           <main className="p-6 md:p-10 space-y-8">
-            {/* =============================================================
-                RUNNING ORDER & HORIZONTAL ROUND PICKS BOARD
-               ============================================================= */}
             {activeEntry.compId && (
               <section className="bg-slate-900 border border-slate-800 rounded-2xl overflow-hidden shadow-2xl">
                 <div className="p-5 border-b border-slate-800 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
@@ -894,7 +952,6 @@ export default function App() {
                     </div>
                   </div>
 
-                  {/* Round Kick-Off Visibility Toggle */}
                   <button
                     onClick={() => setRevealCurrentRound(!revealCurrentRound)}
                     className={`flex items-center gap-2 px-3.5 py-2 rounded-xl text-xs font-bold border transition ${
@@ -917,7 +974,6 @@ export default function App() {
                   </button>
                 </div>
 
-                {/* Horizontal Scrollable Standings Table */}
                 <div className="overflow-x-auto">
                   <table className="w-full text-left border-collapse">
                     <thead>
@@ -955,7 +1011,6 @@ export default function App() {
                                 : 'hover:bg-slate-800/30'
                             }
                           >
-                            {/* Running Order Rank + Player Name */}
                             <td className="py-3 px-4 sticky left-0 bg-slate-900 z-10 whitespace-nowrap font-bold">
                               <div className="flex items-center gap-2.5">
                                 <span className="text-xs font-mono text-slate-500 w-4">
@@ -970,7 +1025,6 @@ export default function App() {
                               </div>
                             </td>
 
-                            {/* Lives Remaining */}
                             <td className="py-3 px-4 text-center whitespace-nowrap">
                               {isEliminated ? (
                                 <span className="text-[10px] font-black uppercase px-2 py-0.5 rounded bg-rose-500/20 text-rose-400">
@@ -988,13 +1042,11 @@ export default function App() {
                               )}
                             </td>
 
-                            {/* Horizontal Line of Team Picks */}
                             {horizontalRounds.map((rNum) => {
                               const pick = allLeaguePicks.find(
                                 (p) => p.user_id === member.user_id && p.round_number === rNum
                               );
 
-                              // Show pick if: it's an earlier round, OR current round has started, OR it's your own pick
                               const canSeePick =
                                 rNum < currentRound ||
                                 (rNum === currentRound && revealCurrentRound) ||
@@ -1016,4 +1068,321 @@ export default function App() {
                                     </span>
                                   ) : (
                                     <div
-                                      className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg border text-xs
+                                      className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg border text-xs font-bold ${
+                                        pick.status === 'win'
+                                          ? 'bg-emerald-950/70 border-emerald-500/50 text-emerald-300'
+                                          : pick.status === 'loss'
+                                          ? 'bg-rose-950/70 border-rose-500/50 text-rose-300 line-through'
+                                          : 'bg-slate-800 border-slate-700 text-white'
+                                      }`}
+                                    >
+                                      {pick.teams?.logo_url && (
+                                        <img
+                                          src={pick.teams.logo_url}
+                                          alt=""
+                                          className="w-4 h-4 object-contain"
+                                        />
+                                      )}
+                                      <span>
+                                        {pick.teams?.short_code || pick.teams?.name || 'Team'}
+                                      </span>
+                                    </div>
+                                  )}
+                                </td>
+                              );
+                            })}
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              </section>
+            )}
+
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between bg-slate-900 border border-slate-800 p-5 rounded-2xl gap-4">
+              <div>
+                <div className="flex items-center gap-2 text-xs font-bold text-slate-400 uppercase tracking-wider">
+                  <Calendar className="w-4 h-4 text-blue-400" />
+                  <span>
+                    {activeEntry.compName ? `${activeEntry.compName} • ` : ''}
+                    {activeEntry.league} • Round {currentRound}
+                  </span>
+                </div>
+                <h3 className="text-2xl font-black text-white mt-1">
+                  Pick Your Club ({teams.length} Teams)
+                </h3>
+              </div>
+
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={() => setCurrentRound((r) => Math.max(1, r - 1))}
+                  disabled={currentRound === 1}
+                  className="px-4 py-2 bg-slate-800 hover:bg-slate-700 disabled:opacity-30 text-xs font-bold rounded-lg transition"
+                >
+                  Previous Round
+                </button>
+                <span className="text-xs font-mono font-bold px-3 py-2 bg-slate-950 rounded-lg border border-slate-800">
+                  R{currentRound}
+                </span>
+                <button
+                  onClick={() => setCurrentRound((r) => r + 1)}
+                  className="px-4 py-2 bg-slate-800 hover:bg-slate-700 text-xs font-bold rounded-lg transition"
+                >
+                  Next Round
+                </button>
+              </div>
+            </div>
+
+            {statusMessage && (
+              <div className="p-3 bg-blue-950/40 border border-blue-800/60 rounded-xl text-xs text-blue-300 flex items-center gap-2">
+                <CheckCircle2 className="w-4 h-4 text-blue-400 shrink-0" />
+                <span>{statusMessage}</span>
+              </div>
+            )}
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-3.5">
+              {teams.map((team, index) => {
+                const isSelectedThisRound = activeRoundPick?.team_id === team.id;
+                const isBurnedInPriorRound = pickedTeamIds.has(team.id) && !isSelectedThisRound;
+
+                const { opponentIndex, isHome } = getOpponentInfo(index, teams.length, currentRound);
+                const opponent = opponentIndex !== null ? teams[opponentIndex] : null;
+                const fixtureText = opponent
+                  ? `${isHome ? 'vs' : '@'} ${opponent.short_code || opponent.name}`
+                  : 'Bye';
+
+                return (
+                  <button
+                    key={team.id}
+                    disabled={isBurnedInPriorRound || activeEntry.remainingLives <= 0}
+                    onClick={() => handleSelectTeam(team, fixtureText)}
+                    className={`p-4 rounded-xl border text-left flex flex-col justify-between min-h-[145px] transition-all relative ${
+                      isSelectedThisRound
+                        ? 'bg-blue-950/90 border-blue-500 ring-2 ring-blue-500/50 shadow-lg'
+                        : isBurnedInPriorRound
+                        ? 'bg-slate-900/30 border-slate-800/40 opacity-40 cursor-not-allowed'
+                        : 'bg-slate-900 border-slate-800 hover:border-slate-600 hover:bg-slate-800/60'
+                    }`}
+                  >
+                    <div>
+                      <div className="flex items-center justify-between gap-2 mb-3">
+                        <div className="flex items-center gap-2.5">
+                          <div className="w-8 h-8 rounded-lg bg-slate-800/80 p-1 flex items-center justify-center overflow-hidden border border-slate-700/60 shrink-0">
+                            {team.logo_url ? (
+                              <img
+                                src={team.logo_url}
+                                alt={team.name}
+                                className="w-full h-full object-contain"
+                                onError={(e) => {
+                                  e.currentTarget.style.display = 'none';
+                                }}
+                              />
+                            ) : (
+                              <span className="font-mono text-[10px] font-bold text-slate-400">
+                                {team.short_code}
+                              </span>
+                            )}
+                          </div>
+                          <span className="font-mono text-xs font-bold text-slate-400">
+                            {team.short_code}
+                          </span>
+                        </div>
+
+                        <div
+                          className={`flex items-center gap-1 px-2 py-0.5 rounded text-[11px] font-bold font-mono ${
+                            isSelectedThisRound
+                              ? 'bg-blue-900/80 text-blue-200 border border-blue-700'
+                              : 'bg-slate-800 text-slate-300 border border-slate-700'
+                          }`}
+                        >
+                          <Swords className="w-3 h-3 text-slate-400" />
+                          <span>{fixtureText}</span>
+                        </div>
+                      </div>
+
+                      <div className="font-bold text-base text-white line-clamp-1">{team.name}</div>
+                      <div className="text-[11px] text-slate-400 mt-0.5">
+                        {isHome ? 'Home against' : 'Away at'} {opponent?.name || 'TBD'}
+                      </div>
+                    </div>
+
+                    <div className="text-[10px] font-bold uppercase tracking-wider mt-3 pt-2 border-t border-slate-800/60 flex items-center justify-between">
+                      {isSelectedThisRound ? (
+                        <>
+                          <span className="text-blue-400 font-black">Locked In</span>
+                          <CheckCircle2 className="w-3.5 h-3.5 text-blue-400" />
+                        </>
+                      ) : isBurnedInPriorRound ? (
+                        <span className="text-slate-600">Already Burned</span>
+                      ) : (
+                        <span className="text-slate-500 hover:text-slate-300">Click to Select</span>
+                      )}
+                    </div>
+                  </button>
+                );
+              })}
+            </div>
+          </main>
+        )}
+      </div>
+
+      {/* Modal: Create Competition */}
+      {activeModal === 'create' && (
+        <div className="fixed inset-0 bg-black/80 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+          <div className="bg-slate-900 border border-slate-800 rounded-2xl max-w-md w-full p-6 shadow-2xl relative">
+            <button
+              onClick={() => setActiveModal(null)}
+              className="absolute top-4 right-4 text-slate-400 hover:text-white"
+            >
+              <X className="w-5 h-5" />
+            </button>
+
+            <div className="flex items-center gap-3 mb-5">
+              <div className="p-2.5 bg-blue-500/10 rounded-xl text-blue-400 border border-blue-500/20">
+                <PlusCircle className="w-6 h-6" />
+              </div>
+              <div>
+                <h3 className="font-black text-lg text-white">Create Custom League</h3>
+                <p className="text-xs text-slate-400">
+                  Generates a unique invite code to share with friends
+                </p>
+              </div>
+            </div>
+
+            {formError && (
+              <div className="p-3 mb-4 bg-rose-950/50 border border-rose-800 text-rose-300 text-xs rounded-lg flex items-center gap-2">
+                <AlertCircle className="w-4 h-4 shrink-0" />
+                <span>{formError}</span>
+              </div>
+            )}
+
+            <form onSubmit={handleCreateCompetition} className="space-y-4">
+              <div>
+                <label className="text-xs font-bold uppercase tracking-wider text-slate-400 block mb-1">
+                  League Name
+                </label>
+                <input
+                  type="text"
+                  placeholder="e.g. Work Mates LMS 2026"
+                  value={formCompName}
+                  onChange={(e) => setFormCompName(e.target.value)}
+                  className="w-full bg-slate-950 border border-slate-800 rounded-xl p-3 text-sm text-white placeholder-slate-600 focus:outline-none focus:border-blue-500"
+                />
+              </div>
+
+              <div>
+                <label className="text-xs font-bold uppercase tracking-wider text-slate-400 block mb-1">
+                  Sport / Competition
+                </label>
+                <div className="grid grid-cols-3 gap-2">
+                  {['NRL', 'AFL', 'EPL'].map((sport) => (
+                    <button
+                      type="button"
+                      key={sport}
+                      onClick={() => setFormSport(sport)}
+                      className={`p-2.5 rounded-xl font-bold text-xs border transition ${
+                        formSport === sport
+                          ? 'bg-blue-600 border-blue-500 text-white'
+                          : 'bg-slate-950 border-slate-800 text-slate-400 hover:text-white'
+                      }`}
+                    >
+                      {sport}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              <div>
+                <label className="text-xs font-bold uppercase tracking-wider text-slate-400 block mb-1">
+                  Starting Lives
+                </label>
+                <div className="grid grid-cols-3 gap-2">
+                  {[1, 2, 3].map((num) => (
+                    <button
+                      type="button"
+                      key={num}
+                      onClick={() => setFormLives(num)}
+                      className={`p-2.5 rounded-xl font-bold text-xs border transition flex items-center justify-center gap-1.5 ${
+                        formLives === num
+                          ? 'bg-rose-600 border-rose-500 text-white'
+                          : 'bg-slate-950 border-slate-800 text-slate-400 hover:text-white'
+                      }`}
+                    >
+                      <Heart className="w-3.5 h-3.5 fill-current" />
+                      <span>
+                        {num} {num === 1 ? 'Life' : 'Lives'}
+                      </span>
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              <button
+                type="submit"
+                className="w-full py-3 bg-blue-600 hover:bg-blue-500 text-white font-bold text-sm rounded-xl transition shadow-lg mt-2"
+              >
+                Create & Join League
+              </button>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* Modal: Join Competition */}
+      {activeModal === 'join' && (
+        <div className="fixed inset-0 bg-black/80 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+          <div className="bg-slate-900 border border-slate-800 rounded-2xl max-w-md w-full p-6 shadow-2xl relative">
+            <button
+              onClick={() => setActiveModal(null)}
+              className="absolute top-4 right-4 text-slate-400 hover:text-white"
+            >
+              <X className="w-5 h-5" />
+            </button>
+
+            <div className="flex items-center gap-3 mb-5">
+              <div className="p-2.5 bg-emerald-500/10 rounded-xl text-emerald-400 border border-emerald-500/20">
+                <LogIn className="w-6 h-6" />
+              </div>
+              <div>
+                <h3 className="font-black text-lg text-white">Join Friend's League</h3>
+                <p className="text-xs text-slate-400">
+                  Enter the 6-character invite code shared by your league creator
+                </p>
+              </div>
+            </div>
+
+            {formError && (
+              <div className="p-3 mb-4 bg-rose-950/50 border border-rose-800 text-rose-300 text-xs rounded-lg flex items-center gap-2">
+                <AlertCircle className="w-4 h-4 shrink-0" />
+                <span>{formError}</span>
+              </div>
+            )}
+
+            <form onSubmit={handleJoinCompetition} className="space-y-4">
+              <div>
+                <label className="text-xs font-bold uppercase tracking-wider text-slate-400 block mb-1">
+                  Invite Code
+                </label>
+                <input
+                  type="text"
+                  placeholder="e.g. A8F3K2"
+                  value={formInviteCode}
+                  onChange={(e) => setFormInviteCode(e.target.value)}
+                  className="w-full bg-slate-950 border border-slate-800 rounded-xl p-3 text-sm font-mono uppercase text-white placeholder-slate-600 focus:outline-none focus:border-emerald-500"
+                />
+              </div>
+
+              <button
+                type="submit"
+                className="w-full py-3 bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-sm rounded-xl transition shadow-lg mt-2"
+              >
+                Join League
+              </button>
+            </form>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
