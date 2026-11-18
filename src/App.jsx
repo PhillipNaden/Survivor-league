@@ -24,6 +24,8 @@ import {
   MessageSquare,
   Send,
   ShieldCheck,
+  Bell,
+  BellOff,
   EyeOff
 } from 'lucide-react';
 
@@ -380,6 +382,53 @@ function buildRoundMatchups(
   return { matches, byeTeam };
 }
 
+// Finds the exact current Comp Round (1, 2, 3...) that is either currently in progress
+// or next up to kick off — ensuring login/join never skips ahead to future rounds.
+function findActiveCompRound(
+  teamsList,
+  sportCode,
+  startLeagueRound,
+  fixturesList,
+  schedulesMap
+) {
+  const nowMs = Date.now();
+  const maxRounds = Math.max(teamsList?.length || 20, 20);
+  const THREE_DAYS_MS = 3 * 24 * 60 * 60 * 1000;
+
+  for (let compRnd = 1; compRnd <= maxRounds; compRnd++) {
+    const actualRnd = Number(startLeagueRound || 1) + (compRnd - 1);
+    const { matches } = buildRoundMatchups(
+      teamsList,
+      sportCode,
+      compRnd,
+      actualRnd,
+      fixturesList,
+      schedulesMap
+    );
+
+    if (matches.length > 0) {
+      const firstKickoffMs = matches[0].kickoffUTC.getTime();
+      const lastKickoffMs = matches[matches.length - 1].kickoffUTC.getTime();
+      // If this round hasn't finished yet (or hasn't kicked off yet), land right here
+      if (nowMs <= lastKickoffMs + 3 * 3600 * 1000 || nowMs < firstKickoffMs) {
+        return compRnd;
+      }
+    } else {
+      const fallbackStart = getDefaultRoundKickoffUTC(
+        sportCode,
+        compRnd,
+        actualRnd,
+        schedulesMap
+      ).getTime();
+      if (nowMs <= fallbackStart + THREE_DAYS_MS) {
+        return compRnd;
+      }
+    }
+  }
+
+  return 1;
+}
+
 function pickDeterministicRandomTeam(availableTeams, seedStr) {
   let hash = 2166136261;
   for (let i = 0; i < seedStr.length; i++) {
@@ -504,6 +553,22 @@ export default function App() {
   const isRoundStarted = (compRoundNum) => {
     const firstKickoff = getRoundFirstKickoff(compRoundNum);
     return nowTick >= firstKickoff.getTime();
+  };
+
+  // Toggle 24-hour reminder email preference
+  const handleToggleEmailReminders = async () => {
+    if (!profile?.id) return;
+    const nextValue = profile.email_reminders === false ? true : false;
+    setProfile((prev) => (prev ? { ...prev, email_reminders: nextValue } : prev));
+    await supabase
+      .from('profiles')
+      .update({ email_reminders: nextValue })
+      .eq('id', profile.id);
+    setStatusMessage(
+      nextValue
+        ? '24-hour round closing email reminders enabled.'
+        : '24-hour round closing email reminders paused.'
+    );
   };
 
   // =========================================================================
@@ -731,7 +796,7 @@ export default function App() {
     const activeTeamsList = teamsOverride || teams;
     const seasonInfo = getActiveSeasonInfo(sportCode);
 
-    if (syncingFixtures) return;
+    if (syncingFixtures) return null;
 
     setSyncingFixtures(true);
     if (!silent) {
@@ -826,7 +891,7 @@ export default function App() {
             `No official ${sportCode} ${seasonInfo.label} draw published yet—using symmetrical round-robin schedule until draw release.`
           );
         }
-        return;
+        return null;
       }
 
       const { error } = await supabase
@@ -837,7 +902,7 @@ export default function App() {
         if (!silent) {
           setStatusMessage(`Error saving synced fixtures: ${error.message}`);
         }
-        return;
+        return null;
       }
 
       const { data: freshFixtures } = await supabase
@@ -854,10 +919,13 @@ export default function App() {
           `Synced ${upsertRows.length} live ${sportCode} (${seasonInfo.label}) fixtures!`
         );
       }
+
+      return freshFixtures || null;
     } catch (err) {
       if (!silent) {
         setStatusMessage(`Fixture sync failed: ${err?.message || 'Network error'}`);
       }
+      return null;
     } finally {
       setSyncingFixtures(false);
     }
@@ -942,11 +1010,11 @@ export default function App() {
 
       const { data: createdProf } = await supabase
         .from('profiles')
-        .upsert({ id: user.id, username: fallbackName })
+        .upsert({ id: user.id, username: fallbackName, email_reminders: true })
         .select()
         .maybeSingle();
 
-      prof = createdProf || { id: user.id, username: fallbackName };
+      prof = createdProf || { id: user.id, username: fallbackName, email_reminders: true };
     }
 
     setProfile(prof);
@@ -1070,6 +1138,7 @@ export default function App() {
     async function loadTournamentData() {
       setLoading(true);
       const sportCode = activeEntry.league || 'NRL';
+      const compStartRound = Number(activeEntry.startRound || (sportCode === 'EPL' ? 11 : 1));
 
       const [teamsRes, schedRes, fixRes] = await Promise.all([
         supabase.from('teams').select('*').eq('league', sportCode).order('name'),
@@ -1084,29 +1153,43 @@ export default function App() {
 
       setTeams(resolvedTeams);
 
+      const resolvedSchedules = {};
       if (!schedRes.error && schedRes.data) {
-        const map = {};
         schedRes.data.forEach((row) => {
-          map[Number(row.round_number)] = row.first_kickoff_utc;
+          resolvedSchedules[Number(row.round_number)] = row.first_kickoff_utc;
         });
-        setRoundSchedules(map);
-      } else {
-        setRoundSchedules({});
       }
+      setRoundSchedules(resolvedSchedules);
 
-      if (!fixRes.error && fixRes.data) {
-        setDbFixtures(fixRes.data);
-      } else {
-        setDbFixtures([]);
-      }
+      const resolvedFixtures = !fixRes.error && fixRes.data ? fixRes.data : [];
+      setDbFixtures(resolvedFixtures);
 
-      setCurrentRound(1);
+      // Land directly on the current active/upcoming week of the competition (never skips ahead)
+      const activeCompRnd = findActiveCompRound(
+        resolvedTeams,
+        sportCode,
+        compStartRound,
+        resolvedFixtures,
+        resolvedSchedules
+      );
+      setCurrentRound(activeCompRnd);
 
       if (activeEntry.compId) {
         await refreshLeagueBoard(activeEntry.compId);
       }
 
-      syncLiveFixtures(sportCode, resolvedTeams, true);
+      // Sync latest live fixtures in background without jumping the user's active round
+      const syncedFixtures = await syncLiveFixtures(sportCode, resolvedTeams, true);
+      if (syncedFixtures && syncedFixtures.length > 0) {
+        const refinedCompRnd = findActiveCompRound(
+          resolvedTeams,
+          sportCode,
+          compStartRound,
+          syncedFixtures,
+          resolvedSchedules
+        );
+        setCurrentRound(refinedCompRnd);
+      }
 
       setLoading(false);
     }
@@ -1301,7 +1384,7 @@ export default function App() {
     }
   };
 
-  // Create League tagged with current season AND current upcoming league round/matchweek
+  // Create League tagged with current season AND current active league round/matchweek
   const handleCreateCompetition = async (e) => {
     e.preventDefault();
     setFormError('');
@@ -1649,6 +1732,18 @@ export default function App() {
   const horizontalRounds = Array.from({ length: maxRoundDisplay }, (_, i) => i + 1);
   const currentRoundKickoff = activeEntry ? getRoundFirstKickoff(currentRound) : null;
 
+  // Check if the currently viewed round closes within the next 24 hours
+  const msUntilCurrentKickoff = currentRoundKickoff
+    ? currentRoundKickoff.getTime() - nowTick
+    : null;
+  const isClosingWithin24Hours =
+    msUntilCurrentKickoff !== null &&
+    msUntilCurrentKickoff > 0 &&
+    msUntilCurrentKickoff <= 24 * 3600 * 1000;
+  const hoursRemaining = isClosingWithin24Hours
+    ? Math.max(1, Math.ceil(msUntilCurrentKickoff / (3600 * 1000)))
+    : null;
+
   return (
     <div className="min-h-screen bg-[radial-gradient(ellipse_at_top,_var(--tw-gradient-stops))] from-blue-950 via-slate-950 to-black text-slate-100 flex relative overflow-x-hidden font-sans">
       <div
@@ -1656,7 +1751,9 @@ export default function App() {
         className="fixed top-0 left-0 w-4 h-full z-40 cursor-pointer"
       />
 
-      {/* Clean Slide-out Sidebar */}
+      {/* =====================================================================
+          LEFT-HAND NAVIGATION SIDEBAR (Includes "How to Play & Rules")
+      ===================================================================== */}
       <aside
         onMouseEnter={() => setSidebarHovered(true)}
         onMouseLeave={() => setSidebarHovered(false)}
@@ -1697,15 +1794,28 @@ export default function App() {
               )}
             </div>
 
-            {/* Create / Join / How To Play Actions */}
+            {/* Menu Section: Leagues & How to Play */}
             <div className="mt-4 space-y-1.5">
               <div
                 className={`text-[10px] font-bold uppercase tracking-wider text-slate-500 px-1.5 ${
                   !isSidebarOpen && 'hidden'
                 }`}
               >
-                Leagues & Rules
+                Menu
               </div>
+
+              <button
+                onClick={() => setActiveModal('howto')}
+                className={`w-full flex items-center gap-2.5 p-2 rounded-lg text-xs font-bold transition text-left ${
+                  activeModal === 'howto'
+                    ? 'bg-amber-600 text-white'
+                    : 'text-amber-300 bg-amber-500/10 border border-amber-500/20 hover:bg-amber-500/20'
+                }`}
+                title="How to Play"
+              >
+                <HelpCircle className="w-4 h-4 text-amber-400 shrink-0" />
+                {isSidebarOpen && <span>How to Play</span>}
+              </button>
 
               <button
                 onClick={() => {
@@ -1740,16 +1850,29 @@ export default function App() {
               </button>
 
               <button
-                onClick={() => setActiveModal('howto')}
-                className={`w-full flex items-center gap-2.5 p-2 rounded-lg text-xs font-bold transition text-left ${
-                  activeModal === 'howto'
-                    ? 'bg-amber-600 text-white'
-                    : 'text-slate-300 hover:bg-slate-800 hover:text-white'
-                }`}
-                title="How to Play"
+                onClick={handleToggleEmailReminders}
+                className="w-full flex items-center justify-between gap-2 p-2 rounded-lg text-xs font-bold text-slate-300 hover:bg-slate-800 hover:text-white transition text-left"
+                title="Toggle 24-hour round closing email reminders"
               >
-                <HelpCircle className="w-4 h-4 text-amber-400 shrink-0" />
-                {isSidebarOpen && <span>How to Play & Rules</span>}
+                <div className="flex items-center gap-2.5">
+                  {profile?.email_reminders === false ? (
+                    <BellOff className="w-4 h-4 text-slate-500 shrink-0" />
+                  ) : (
+                    <Bell className="w-4 h-4 text-blue-400 shrink-0" />
+                  )}
+                  {isSidebarOpen && <span>24h Email Reminders</span>}
+                </div>
+                {isSidebarOpen && (
+                  <span
+                    className={`text-[10px] px-1.5 py-0.5 rounded font-black ${
+                      profile?.email_reminders === false
+                        ? 'bg-slate-800 text-slate-500'
+                        : 'bg-emerald-500/20 text-emerald-300'
+                    }`}
+                  >
+                    {profile?.email_reminders === false ? 'OFF' : 'ON'}
+                  </span>
+                )}
               </button>
             </div>
 
@@ -2040,7 +2163,7 @@ export default function App() {
                           setActiveEntry({
                             league: selectedLeague,
                             season: getActiveSeasonInfo(selectedLeague).label,
-                            startRound: selectedLeague === 'EPL' ? 11 : 1,
+                            startRound: detectCurrentLeagueRound(selectedLeague, dbFixtures),
                             totalLives: count,
                             remainingLives: count
                           })
@@ -2065,6 +2188,39 @@ export default function App() {
         ) : (
           /* View 2: Tabbed League Workspace ("Pick Teams" | "Standings" | "Message Board") */
           <main className="p-4 md:p-6 max-w-6xl w-full mx-auto space-y-4">
+            {/* 24-Hour Round Closing Reminder Banner */}
+            {isClosingWithin24Hours && !isCurrentRoundLocked && (
+              <div
+                className={`px-4 py-2.5 rounded-xl border flex flex-wrap items-center justify-between gap-2 text-xs ${
+                  activeRoundPick
+                    ? 'bg-emerald-950/50 border-emerald-700/60 text-emerald-200'
+                    : 'bg-amber-950/60 border-amber-600/70 text-amber-200'
+                }`}
+              >
+                <div className="flex items-center gap-2">
+                  <Bell className="w-4 h-4 shrink-0 text-amber-400" />
+                  <span>
+                    <strong>
+                      Round {currentRound} ({getRoundBracketLabel(currentRound)}) closes in ~{hoursRemaining}h:
+                    </strong>{' '}
+                    {activeRoundPick ? (
+                      <>
+                        Your tip is locked in as{' '}
+                        <strong className="underline">{activeRoundPick.team_name}</strong>.
+                      </>
+                    ) : (
+                      <>
+                        You haven&apos;t entered a tip yet! A random available club will be assigned at kickoff if left blank.
+                      </>
+                    )}
+                  </span>
+                </div>
+                <span className="text-[11px] opacity-80">
+                  Email reminders: {profile?.email_reminders === false ? 'Off' : 'On (24h prior)'}
+                </span>
+              </div>
+            )}
+
             {/* League Header + 3-Tab Switcher */}
             <div className="flex flex-col md:flex-row md:items-center justify-between bg-slate-900 border border-slate-800 px-4 py-3 rounded-xl gap-3">
               <div>
@@ -2222,7 +2378,7 @@ export default function App() {
                           setCurrentRound(Number(e.target.value));
                           setStatusMessage('');
                         }}
-                        aria-label="Jump to Round"
+                        aria-label="Select Round from Dropdown"
                         className="bg-slate-950 border border-slate-700 hover:border-blue-500 rounded-lg px-2.5 py-1.5 text-xs font-bold text-blue-300 focus:outline-none focus:border-blue-500 cursor-pointer"
                       >
                         {dropdownRounds.map((rNum) => {
@@ -2637,3 +2793,384 @@ export default function App() {
                                         {pick.status === 'auto_pick' && (
                                           <span className="text-[9px] uppercase text-amber-400">
                                             Auto
+                                          </span>
+                                        )}
+                                      </div>
+                                    )}
+                                  </td>
+                                );
+                              })}
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+              </section>
+            )}
+
+            {/* ===============================================================
+                TAB 3: LEAGUE MESSAGE BOARD
+            =============================================================== */}
+            {activeTab === 'chat' && (
+              <section className="bg-slate-900 border border-slate-800 rounded-2xl overflow-hidden shadow-2xl flex flex-col">
+                <div className="p-4 border-b border-slate-800 flex items-center justify-between gap-3">
+                  <div className="flex items-center gap-2.5">
+                    <div className="p-2 bg-blue-500/10 rounded-xl text-blue-400 border border-blue-500/20">
+                      <MessageSquare className="w-4 h-4" />
+                    </div>
+                    <div>
+                      <h2 className="font-black text-base text-white">
+                        {activeEntry.compName || `${activeEntry.league} Solo`} — League Message Board
+                      </h2>
+                      <p className="text-xs text-slate-400">
+                        Open chat for everyone in this competition • Post banter, reminders, and round reactions
+                      </p>
+                    </div>
+                  </div>
+                </div>
+
+                {!activeEntry.compId ? (
+                  <div className="p-8 text-center text-sm text-slate-400">
+                    You are in Solo Practice mode. Create or join a competition with an invite code to chat with your league mates.
+                  </div>
+                ) : (
+                  <>
+                    <div className="p-4 space-y-3 max-h-[420px] min-h-[260px] overflow-y-auto bg-slate-950/60">
+                      {leagueMessages.length === 0 ? (
+                        <div className="h-48 flex flex-col items-center justify-center text-center text-slate-500 text-xs">
+                          <MessageSquare className="w-7 h-7 mb-2 opacity-40" />
+                          <p className="font-bold text-slate-400">No messages posted yet</p>
+                          <p className="mt-0.5">
+                            Kick off the banter below—everyone in {activeEntry.compName} can see and reply here.
+                          </p>
+                        </div>
+                      ) : (
+                        leagueMessages.map((msg) => {
+                          const isMine = msg.user_id === session.user.id;
+                          const senderName = msg.profiles?.username || 'Player';
+                          return (
+                            <div
+                              key={msg.id}
+                              className={`flex flex-col ${
+                                isMine ? 'items-end' : 'items-start'
+                              }`}
+                            >
+                              <div className="flex items-center gap-2 mb-1 px-1">
+                                <span className="text-[11px] font-bold text-slate-300">
+                                  {isMine ? 'You' : senderName}
+                                </span>
+                                <span className="text-[10px] text-slate-500">
+                                  {formatMessageTime(msg.created_at)}
+                                </span>
+                                {isMine && (
+                                  <button
+                                    type="button"
+                                    onClick={() => handleDeleteMessage(msg.id)}
+                                    title="Delete your message"
+                                    className="text-slate-600 hover:text-rose-400 transition"
+                                  >
+                                    <Trash2 className="w-3 h-3" />
+                                  </button>
+                                )}
+                              </div>
+                              <div
+                                className={`max-w-[80%] sm:max-w-[70%] px-3.5 py-2.5 rounded-2xl text-xs sm:text-sm leading-relaxed break-words ${
+                                  isMine
+                                    ? 'bg-blue-600 text-white rounded-br-sm'
+                                    : 'bg-slate-800 border border-slate-700/80 text-slate-100 rounded-bl-sm'
+                                }`}
+                              >
+                                {msg.message}
+                              </div>
+                            </div>
+                          );
+                        })
+                      )}
+                      <div ref={chatBottomRef} />
+                    </div>
+
+                    <form
+                      onSubmit={handleSendMessage}
+                      className="p-3 bg-slate-900 border-t border-slate-800 flex items-center gap-2"
+                    >
+                      <input
+                        type="text"
+                        maxLength={500}
+                        placeholder={`Post a message to ${activeEntry.compName}...`}
+                        value={newMessageText}
+                        onChange={(e) => setNewMessageText(e.target.value)}
+                        className="flex-1 bg-slate-950 border border-slate-800 rounded-xl px-3.5 py-2.5 text-xs sm:text-sm text-white placeholder-slate-500 focus:outline-none focus:border-blue-500"
+                      />
+                      <button
+                        type="submit"
+                        disabled={sendingMessage || !newMessageText.trim()}
+                        className="flex items-center gap-1.5 px-4 py-2.5 rounded-xl bg-blue-600 hover:bg-blue-500 disabled:opacity-40 text-xs font-bold text-white transition shrink-0"
+                      >
+                        <Send className="w-3.5 h-3.5" />
+                        <span>{sendingMessage ? 'Posting...' : 'Post'}</span>
+                      </button>
+                    </form>
+                  </>
+                )}
+              </section>
+            )}
+          </main>
+        )}
+      </div>
+
+      {/* =====================================================================
+          MODAL: HOW TO PLAY & MAKING PICKS GUIDE
+      ===================================================================== */}
+      {activeModal === 'howto' && (
+        <div className="fixed inset-0 bg-black/80 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+          <div className="bg-slate-900 border border-slate-800 rounded-2xl max-w-2xl w-full max-h-[88vh] overflow-y-auto p-6 shadow-2xl relative">
+            <button
+              onClick={() => setActiveModal(null)}
+              className="absolute top-4 right-4 text-slate-400 hover:text-white"
+            >
+              <X className="w-5 h-5" />
+            </button>
+
+            <div className="flex items-center gap-3 mb-5">
+              <div className="p-2.5 bg-amber-500/10 rounded-xl text-amber-400 border border-amber-500/20">
+                <HelpCircle className="w-6 h-6" />
+              </div>
+              <div>
+                <h3 className="font-black text-lg text-white">How to Play — Last Man Standing</h3>
+                <p className="text-xs text-slate-400">
+                  Survive round by round without repeating a club until only one tipper remains
+                </p>
+              </div>
+            </div>
+
+            <div className="space-y-4 text-xs sm:text-sm text-slate-300">
+              <div className="bg-slate-950/90 border border-slate-800 rounded-xl p-4 space-y-2.5">
+                <div className="flex items-center gap-2 font-black text-xs uppercase tracking-wider text-amber-400">
+                  <ShieldCheck className="w-4 h-4" />
+                  <span>1. Core Game Rules</span>
+                </div>
+                <ul className="space-y-2 text-xs text-slate-300 leading-relaxed list-disc pl-4">
+                  <li>
+                    <strong className="text-white">Pick One Winner Per Round:</strong> Each round of your competition, pick one club to win their match.
+                  </li>
+                  <li>
+                    <strong className="text-white">Never Repeat a Team:</strong> Once you use a club in any round, that club is burned for the rest of the season—you cannot pick them again.
+                  </li>
+                  <li>
+                    <strong className="text-white">Lives & Elimination:</strong> Everyone starts with the number of lives chosen when the league was created (1, 2, or 3 hearts). If your tipped team loses or draws, you lose 1 life. Lose all your lives and you are eliminated (<span className="text-rose-400 font-bold">OUT</span>).
+                  </li>
+                  <li>
+                    <strong className="text-white">Last Tipper Standing Wins:</strong> The competition runs until only one player still has lives remaining.
+                  </li>
+                </ul>
+              </div>
+
+              <div className="bg-slate-950/90 border border-slate-800 rounded-xl p-4 space-y-2.5">
+                <div className="flex items-center gap-2 font-black text-xs uppercase tracking-wider text-blue-400">
+                  <LayoutGrid className="w-4 h-4" />
+                  <span>2. How to Make & Change Your Picks</span>
+                </div>
+                <ol className="space-y-2 text-xs text-slate-300 leading-relaxed list-decimal pl-4">
+                  <li>
+                    <strong className="text-white">Select a Matchup Side:</strong> On the <strong className="text-blue-300">Pick Teams</strong> tab, every game shows <strong className="text-white">Home</strong> on the left vs <strong className="text-white">Away</strong> on the right, with the kickoff time converted to your computer&apos;s local timezone underneath. Click the club you want to back.
+                  </li>
+                  <li>
+                    <strong className="text-white">Plan Ahead Across Future Rounds:</strong> Use <strong className="text-white">Prev</strong>, <strong className="text-white">Next</strong>, or the <strong className="text-blue-300">Round Dropdown</strong> between them to jump into upcoming rounds and map out your picks in advance. Clubs already assigned to another round show <span className="text-amber-400 font-semibold">Used in R#</span> so you can&apos;t double-pick.
+                  </li>
+                  <li>
+                    <strong className="text-white">Change or Clear Anytime Before Kickoff:</strong> As long as the round&apos;s first game hasn&apos;t kicked off yet, click another team to switch your tip, or click your selected team (or <span className="text-rose-300 font-semibold">Clear Pick</span>) to remove it.
+                  </li>
+                </ol>
+              </div>
+
+              <div className="bg-slate-950/90 border border-slate-800 rounded-xl p-4 space-y-2.5">
+                <div className="flex items-center gap-2 font-black text-xs uppercase tracking-wider text-emerald-400">
+                  <Clock className="w-4 h-4" />
+                  <span>3. Kickoff Locks, Reminders & Missed Tips</span>
+                </div>
+                <ul className="space-y-2 text-xs text-slate-300 leading-relaxed list-disc pl-4">
+                  <li>
+                    <strong className="text-white">Tips Stay Secret Until Kickoff:</strong> Before a round starts, the <strong className="text-blue-300">Standings</strong> tab shows <span className="text-amber-300 font-semibold">Tipped</span> with a padlock for other players so nobody can copy your pick. The instant the first game of that round kicks off, all picks unlock and become visible.
+                  </li>
+                  <li>
+                    <strong className="text-white">24-Hour Reminder Emails:</strong> 24 hours before a round closes, you&apos;ll receive an email confirming your locked-in tip (or reminding you to pick if you haven&apos;t submitted one yet). Toggle this anytime from the left menu.
+                  </li>
+                  <li>
+                    <strong className="text-white">Missed Tip Protection:</strong> If you forget to enter a tip before the first game kicks off, the system automatically assigns you a random available club you haven&apos;t used yet (<span className="text-amber-300 font-semibold">AUTO</span>). If you have no unused clubs left, you automatically lose 1 life.
+                  </li>
+                </ul>
+              </div>
+            </div>
+
+            <button
+              type="button"
+              onClick={() => setActiveModal(null)}
+              className="w-full mt-5 py-2.5 bg-blue-600 hover:bg-blue-500 text-white font-bold text-xs sm:text-sm rounded-xl transition"
+            >
+              Got It — Back to Comp
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* Modal: Create Competition */}
+      {activeModal === 'create' && (
+        <div className="fixed inset-0 bg-black/80 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+          <div className="bg-slate-900 border border-slate-800 rounded-2xl max-w-md w-full p-6 shadow-2xl relative">
+            <button
+              onClick={() => setActiveModal(null)}
+              className="absolute top-4 right-4 text-slate-400 hover:text-white"
+            >
+              <X className="w-5 h-5" />
+            </button>
+
+            <div className="flex items-center gap-3 mb-5">
+              <div className="p-2.5 bg-blue-500/10 rounded-xl text-blue-400 border border-blue-500/20">
+                <PlusCircle className="w-6 h-6" />
+              </div>
+              <div>
+                <h3 className="font-black text-lg text-white">Create Custom League</h3>
+                <p className="text-xs text-slate-400">
+                  Starts at Round 1 from this upcoming {getActiveSeasonInfo(formSport).label} round
+                </p>
+              </div>
+            </div>
+
+            {formError && (
+              <div className="p-3 mb-4 bg-rose-950/50 border border-rose-800 text-rose-300 text-xs rounded-lg flex items-center gap-2">
+                <AlertCircle className="w-4 h-4 shrink-0" />
+                <span>{formError}</span>
+              </div>
+            )}
+
+            <form onSubmit={handleCreateCompetition} className="space-y-4">
+              <div>
+                <label className="text-xs font-bold uppercase tracking-wider text-slate-400 block mb-1">
+                  League Name
+                </label>
+                <input
+                  type="text"
+                  placeholder={`e.g. Work Mates LMS ${getActiveSeasonInfo(formSport).label}`}
+                  value={formCompName}
+                  onChange={(e) => setFormCompName(e.target.value)}
+                  className="w-full bg-slate-950 border border-slate-800 rounded-xl p-3 text-sm text-white placeholder-slate-600 focus:outline-none focus:border-blue-500"
+                />
+              </div>
+
+              <div>
+                <label className="text-xs font-bold uppercase tracking-wider text-slate-400 block mb-1">
+                  Sport / Competition
+                </label>
+                <div className="grid grid-cols-3 gap-2">
+                  {['NRL', 'AFL', 'EPL'].map((sport) => (
+                    <button
+                      type="button"
+                      key={sport}
+                      onClick={() => setFormSport(sport)}
+                      className={`p-2.5 rounded-xl font-bold text-xs border transition ${
+                        formSport === sport
+                          ? 'bg-blue-600 border-blue-500 text-white'
+                          : 'bg-slate-950 border-slate-800 text-slate-400 hover:text-white'
+                      }`}
+                    >
+                      {sport} ({getActiveSeasonInfo(sport).label})
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              <div>
+                <label className="text-xs font-bold uppercase tracking-wider text-slate-400 block mb-1">
+                  Starting Lives
+                </label>
+                <div className="grid grid-cols-3 gap-2">
+                  {[1, 2, 3].map((num) => (
+                    <button
+                      type="button"
+                      key={num}
+                      onClick={() => setFormLives(num)}
+                      className={`p-2.5 rounded-xl font-bold text-xs border transition flex items-center justify-center gap-1.5 ${
+                        formLives === num
+                          ? 'bg-rose-600 border-rose-500 text-white'
+                          : 'bg-slate-950 border-slate-800 text-slate-400 hover:text-white'
+                      }`}
+                    >
+                      <Heart className="w-3.5 h-3.5 fill-current" />
+                      <span>
+                        {num} {num === 1 ? 'Life' : 'Lives'}
+                      </span>
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              <button
+                type="submit"
+                className="w-full py-3 bg-blue-600 hover:bg-blue-500 text-white font-bold text-sm rounded-xl transition shadow-lg mt-2"
+              >
+                Create & Join {getActiveSeasonInfo(formSport).label} League
+              </button>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* Modal: Join Competition */}
+      {activeModal === 'join' && (
+        <div className="fixed inset-0 bg-black/80 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+          <div className="bg-slate-900 border border-slate-800 rounded-2xl max-w-md w-full p-6 shadow-2xl relative">
+            <button
+              onClick={() => setActiveModal(null)}
+              className="absolute top-4 right-4 text-slate-400 hover:text-white"
+            >
+              <X className="w-5 h-5" />
+            </button>
+
+            <div className="flex items-center gap-3 mb-5">
+              <div className="p-2.5 bg-emerald-500/10 rounded-xl text-emerald-400 border border-emerald-500/20">
+                <LogIn className="w-6 h-6" />
+              </div>
+              <div>
+                <h3 className="font-black text-lg text-white">Join Friend's League</h3>
+                <p className="text-xs text-slate-400">
+                  Enter the 6-character invite code shared by your league creator
+                </p>
+              </div>
+            </div>
+
+            {formError && (
+              <div className="p-3 mb-4 bg-rose-950/50 border border-rose-800 text-rose-300 text-xs rounded-lg flex items-center gap-2">
+                <AlertCircle className="w-4 h-4 shrink-0" />
+                <span>{formError}</span>
+              </div>
+            )}
+
+            <form onSubmit={handleJoinCompetition} className="space-y-4">
+              <div>
+                <label className="text-xs font-bold uppercase tracking-wider text-slate-400 block mb-1">
+                  Invite Code
+                </label>
+                <input
+                  type="text"
+                  placeholder="e.g. A8F3K2"
+                  value={formInviteCode}
+                  onChange={(e) => setFormInviteCode(e.target.value)}
+                  className="w-full bg-slate-950 border border-slate-800 rounded-xl p-3 text-sm font-mono uppercase text-white placeholder-slate-600 focus:outline-none focus:border-emerald-500"
+                />
+              </div>
+
+              <button
+                type="submit"
+                className="w-full py-3 bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-sm rounded-xl transition shadow-lg mt-2"
+              >
+                Join League
+              </button>
+            </form>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
