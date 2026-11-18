@@ -5,6 +5,7 @@ import {
   Trophy,
   CheckCircle2,
   ChevronRight,
+  ChevronDown,
   RotateCcw,
   Calendar,
   Lock,
@@ -86,6 +87,7 @@ const FALLBACK_TEAMS = {
 };
 
 const LAST_LEAGUE_STORAGE_KEY = 'lms_last_active_league_id';
+const STARTED_ROUNDS_STORAGE_KEY = 'lms_started_rounds_by_league';
 
 export default function App() {
   // User Authentication & Profile State
@@ -106,6 +108,7 @@ export default function App() {
   const [activeModal, setActiveModal] = useState(null); // 'create' | 'join' | null
   const [sidebarHovered, setSidebarHovered] = useState(false);
   const [sidebarPinned, setSidebarPinned] = useState(false);
+  const [tipsDrawerOpen, setTipsDrawerOpen] = useState(true);
 
   // User's Joined Leagues
   const [myLeagues, setMyLeagues] = useState([]);
@@ -127,7 +130,13 @@ export default function App() {
   const [picks, setPicks] = useState([]);
   const [leagueMembers, setLeagueMembers] = useState([]);
   const [allLeaguePicks, setAllLeaguePicks] = useState([]);
-  const [revealCurrentRound, setRevealCurrentRound] = useState(false);
+  const [startedRoundsMap, setStartedRoundsMap] = useState(() => {
+    try {
+      return JSON.parse(localStorage.getItem(STARTED_ROUNDS_STORAGE_KEY) || '{}');
+    } catch {
+      return {};
+    }
+  });
   const [currentRound, setCurrentRound] = useState(1);
   const [loading, setLoading] = useState(false);
   const [statusMessage, setStatusMessage] = useState('');
@@ -135,13 +144,31 @@ export default function App() {
   const LEAGUE_CONFIG = {
     NRL: { name: 'National Rugby League', defaultRound: 1 },
     AFL: { name: 'Australian Football League', defaultRound: 1 },
-    EPL: { name: 'English Premier League', defaultRound: 12 },
+    EPL: { name: 'English Premier League', defaultRound: 1 },
   };
 
-  // Helper to open a saved league and remember it for the next visit
+  // Track which rounds have kicked off for the active league
+  const activeLeagueKey = activeEntry?.compId || activeEntry?.league || 'solo';
+  const startedRoundsForActive = new Set(startedRoundsMap[activeLeagueKey] || []);
+
+  const toggleRoundStarted = (roundNum) => {
+    setStartedRoundsMap((prev) => {
+      const currentList = new Set(prev[activeLeagueKey] || []);
+      if (currentList.has(roundNum)) {
+        currentList.delete(roundNum);
+      } else {
+        currentList.add(roundNum);
+      }
+      const updated = { ...prev, [activeLeagueKey]: Array.from(currentList) };
+      localStorage.setItem(STARTED_ROUNDS_STORAGE_KEY, JSON.stringify(updated));
+      return updated;
+    });
+  };
+
   const openSavedLeague = (membership, playerName) => {
     if (!membership?.leagues) return;
     localStorage.setItem(LAST_LEAGUE_STORAGE_KEY, membership.league_id);
+    setStatusMessage('');
     setActiveEntry({
       league: membership.leagues.sport || 'NRL',
       totalLives: membership.leagues.starting_lives || 1,
@@ -153,7 +180,7 @@ export default function App() {
     });
   };
 
-  // 1. Restore session on page load & subscribe cleanly to auth events (no async DB calls inside callback)
+  // 1. Restore session on page load
   useEffect(() => {
     let mounted = true;
 
@@ -189,7 +216,7 @@ export default function App() {
     };
   }, []);
 
-  // 2. Whenever session changes (login or page refresh), load profile & saved comps
+  // 2. Load profile & saved comps when session changes
   useEffect(() => {
     if (session?.user) {
       fetchUserProfileAndLeagues(session.user, true);
@@ -230,7 +257,6 @@ export default function App() {
     if (memberships) {
       setMyLeagues(memberships);
 
-      // Automatically reopen the user's last active comp when they return
       if (autoRestoreLastLeague && !activeEntry && memberships.length > 0) {
         const savedLeagueId = localStorage.getItem(LAST_LEAGUE_STORAGE_KEY);
         const targetMembership =
@@ -403,8 +429,8 @@ export default function App() {
       const myPicks = picksRes.data
         .filter((p) => p.user_id === session?.user?.id)
         .map((p) => ({
-          round: p.round_number,
-          team_id: p.team_id,
+          round: Number(p.round_number),
+          team_id: String(p.team_id),
           team_name: p.teams?.name || 'Selected Team',
           fixture: `Round ${p.round_number}`
         }));
@@ -412,27 +438,39 @@ export default function App() {
     }
   }
 
-  const pickedTeamIds = new Set(picks.map((p) => p.team_id));
-  const activeRoundPick = picks.find((p) => p.round === currentRound);
+  // Map every picked team ID -> the round number it was used in (across all past & future rounds)
+  const teamRoundMap = new Map(picks.map((p) => [String(p.team_id), Number(p.round)]));
+  const activeRoundPick = picks.find((p) => Number(p.round) === Number(currentRound));
+  const isCurrentRoundLocked = startedRoundsForActive.has(Number(currentRound));
 
-  // Lock in a team pick
+  // Lock in a team pick for the currently selected round (past, current, or upcoming)
   const handleSelectTeam = async (team, fixtureText) => {
+    const teamIdStr = String(team.id);
+
     if (activeEntry.remainingLives <= 0) {
       setStatusMessage('Eliminated: No remaining lives.');
       return;
     }
 
-    if (pickedTeamIds.has(team.id) && activeRoundPick?.team_id !== team.id) {
-      setStatusMessage(`Rule violation: You have already used ${team.name}.`);
+    if (isCurrentRoundLocked) {
+      setStatusMessage(`Round ${currentRound} has already kicked off—picks are locked.`);
       return;
     }
 
-    const updated = picks.filter((p) => p.round !== currentRound);
+    const usedInRound = teamRoundMap.get(teamIdStr);
+    if (usedInRound !== undefined && usedInRound !== Number(currentRound)) {
+      setStatusMessage(
+        `Rule violation: You already selected ${team.name} for Round ${usedInRound}.`
+      );
+      return;
+    }
+
+    const updated = picks.filter((p) => Number(p.round) !== Number(currentRound));
     setPicks([
       ...updated,
       {
-        round: currentRound,
-        team_id: team.id,
+        round: Number(currentRound),
+        team_id: teamIdStr,
         team_name: team.name,
         fixture: fixtureText
       }
@@ -443,7 +481,7 @@ export default function App() {
         {
           league_id: activeEntry.compId,
           user_id: session.user.id,
-          round_number: currentRound,
+          round_number: Number(currentRound),
           team_id: team.id,
           status: 'pending'
         },
@@ -584,9 +622,6 @@ export default function App() {
     }
   };
 
-  // =========================================================================
-  // INITIAL SESSION CHECK SPINNER (Prevents Login Screen Flash on Refresh)
-  // =========================================================================
   if (authChecking) {
     return (
       <div className="min-h-screen bg-slate-950 text-slate-300 flex items-center justify-center font-sans">
@@ -790,7 +825,7 @@ export default function App() {
   }
 
   const isSidebarOpen = sidebarHovered || sidebarPinned;
-  const maxRoundDisplay = Math.max(currentRound + 2, 12);
+  const maxRoundDisplay = Math.max(currentRound + 3, 12);
   const horizontalRounds = Array.from({ length: maxRoundDisplay }, (_, i) => i + 1);
 
   return (
@@ -805,21 +840,22 @@ export default function App() {
         onMouseEnter={() => setSidebarHovered(true)}
         onMouseLeave={() => setSidebarHovered(false)}
         className={`fixed top-0 left-0 h-full bg-slate-900/95 backdrop-blur-md border-r border-slate-800 z-50 transition-all duration-300 ease-in-out flex flex-col justify-between shadow-2xl ${
-          isSidebarOpen ? 'w-80 translate-x-0' : 'w-16 -translate-x-12 md:translate-x-0 md:w-16'
+          isSidebarOpen ? 'w-96 translate-x-0' : 'w-14 -translate-x-12 md:translate-x-0 md:w-14'
         }`}
       >
-        <div className="p-4 flex flex-col h-full justify-between overflow-y-auto">
+        <div className="p-3.5 flex flex-col h-full justify-between overflow-y-auto">
           <div>
-            <div className="flex items-center justify-between pb-4 border-b border-slate-800">
-              <div className="flex items-center gap-3">
-                <div className="p-2 bg-amber-500/10 rounded-xl text-amber-400 shrink-0">
-                  <Trophy className="w-5 h-5" />
+            {/* Brand Header */}
+            <div className="flex items-center justify-between pb-3 border-b border-slate-800">
+              <div className="flex items-center gap-2.5">
+                <div className="p-1.5 bg-amber-500/10 rounded-lg text-amber-400 shrink-0">
+                  <Trophy className="w-4 h-4" />
                 </div>
                 {isSidebarOpen && (
                   <div>
-                    <h2 className="font-black text-sm text-white tracking-wide">LAST MAN STANDING</h2>
+                    <h2 className="font-black text-xs text-white tracking-wide">LAST MAN STANDING</h2>
                     <p className="text-[10px] text-emerald-400 font-bold">
-                      Logged in as {profile?.username || session.user.email}
+                      {profile?.username || session.user.email}
                     </p>
                   </div>
                 )}
@@ -840,9 +876,10 @@ export default function App() {
               )}
             </div>
 
-            <div className="mt-6 space-y-2">
+            {/* Create / Join Actions */}
+            <div className="mt-4 space-y-1.5">
               <div
-                className={`text-[10px] font-bold uppercase tracking-wider text-slate-500 px-2 ${
+                className={`text-[10px] font-bold uppercase tracking-wider text-slate-500 px-1.5 ${
                   !isSidebarOpen && 'hidden'
                 }`}
               >
@@ -854,14 +891,14 @@ export default function App() {
                   setFormError('');
                   setActiveModal('create');
                 }}
-                className={`w-full flex items-center gap-3 p-2.5 rounded-xl text-xs font-bold transition text-left ${
+                className={`w-full flex items-center gap-2.5 p-2 rounded-lg text-xs font-bold transition text-left ${
                   activeModal === 'create'
                     ? 'bg-blue-600 text-white'
                     : 'text-slate-300 hover:bg-slate-800 hover:text-white'
                 }`}
                 title="Create Comp"
               >
-                <PlusCircle className="w-5 h-5 text-blue-400 shrink-0" />
+                <PlusCircle className="w-4 h-4 text-blue-400 shrink-0" />
                 {isSidebarOpen && <span>Create Competition</span>}
               </button>
 
@@ -870,28 +907,29 @@ export default function App() {
                   setFormError('');
                   setActiveModal('join');
                 }}
-                className={`w-full flex items-center gap-3 p-2.5 rounded-xl text-xs font-bold transition text-left ${
+                className={`w-full flex items-center gap-2.5 p-2 rounded-lg text-xs font-bold transition text-left ${
                   activeModal === 'join'
                     ? 'bg-emerald-600 text-white'
                     : 'text-slate-300 hover:bg-slate-800 hover:text-white'
                 }`}
                 title="Join Comp"
               >
-                <LogIn className="w-5 h-5 text-emerald-400 shrink-0" />
+                <LogIn className="w-4 h-4 text-emerald-400 shrink-0" />
                 {isSidebarOpen && <span>Join via Invite Code</span>}
               </button>
             </div>
 
+            {/* My Saved Comps */}
             {myLeagues.length > 0 && isSidebarOpen && (
-              <div className="mt-6 space-y-1.5 border-t border-slate-800 pt-4">
-                <div className="text-[10px] font-bold uppercase tracking-wider text-slate-500 px-2 mb-2">
+              <div className="mt-4 space-y-1.5 border-t border-slate-800 pt-3">
+                <div className="text-[10px] font-bold uppercase tracking-wider text-slate-500 px-1.5 mb-1.5">
                   My Saved Comps
                 </div>
                 {myLeagues.map((m) => (
                   <button
                     key={m.id}
                     onClick={() => openSavedLeague(m)}
-                    className={`w-full flex items-center justify-between p-2.5 rounded-xl text-xs font-bold border transition ${
+                    className={`w-full flex items-center justify-between p-2 rounded-lg text-xs font-bold border transition ${
                       activeEntry?.compId === m.league_id
                         ? 'bg-blue-950/80 border-blue-500 text-white'
                         : 'bg-slate-950/60 border-slate-800 text-slate-300 hover:border-slate-600'
@@ -899,7 +937,9 @@ export default function App() {
                   >
                     <div className="truncate text-left">
                       <div className="truncate">{m.leagues?.name}</div>
-                      <div className="text-[10px] text-slate-500">{m.leagues?.sport || 'NRL'}</div>
+                      <div className="text-[10px] text-slate-500">
+                        {m.leagues?.sport || 'NRL'} • Code: {m.leagues?.invite_code}
+                      </div>
                     </div>
                     <span className="text-rose-400 flex items-center gap-1 shrink-0">
                       {m.lives} <Heart className="w-3 h-3 fill-rose-500" />
@@ -909,47 +949,223 @@ export default function App() {
               </div>
             )}
 
-            {activeEntry && isSidebarOpen && (
-              <div className="mt-6 space-y-4 border-t border-slate-800 pt-5">
-                <div>
-                  <span className="text-[10px] font-bold uppercase tracking-wider text-blue-400">
-                    {activeEntry.compName ? `${activeEntry.league} Private League` : `${activeEntry.league} Solo`}
-                  </span>
-                  <h3 className="text-lg font-black text-white truncate">
-                    {activeEntry.compName || activeEntry.league}
-                  </h3>
-                  {activeEntry.inviteCode && (
-                    <div className="mt-1 inline-block px-2 py-0.5 rounded bg-slate-950 border border-slate-700 text-[11px] font-mono text-amber-400">
-                      Invite Code: <strong>{activeEntry.inviteCode}</strong>
-                    </div>
-                  )}
-                </div>
-
-                <div className="bg-slate-950 p-3 rounded-xl border border-slate-800">
-                  <div className="text-[10px] uppercase font-bold text-slate-400 mb-1.5">
-                    Remaining Lives
+            {/* Collapsible Dropdown: Running Order & Everyone's Tips */}
+            {activeEntry?.compId && isSidebarOpen && (
+              <div className="mt-4 border-t border-slate-800 pt-3">
+                <button
+                  type="button"
+                  onClick={() => setTipsDrawerOpen(!tipsDrawerOpen)}
+                  className="w-full flex items-center justify-between p-2 rounded-lg bg-slate-950 border border-slate-800 hover:border-slate-600 text-xs font-bold text-white transition"
+                >
+                  <div className="flex items-center gap-2">
+                    <Users className="w-4 h-4 text-blue-400" />
+                    <span>Running Order & Tips</span>
                   </div>
-                  <div className="flex gap-1.5">
-                    {Array.from({ length: activeEntry.totalLives }).map((_, i) => (
-                      <Heart
-                        key={i}
-                        className={`w-5 h-5 ${
-                          i < activeEntry.remainingLives
-                            ? 'fill-rose-500 text-rose-500'
-                            : 'fill-slate-800 text-slate-700'
+                  <ChevronDown
+                    className={`w-4 h-4 text-slate-400 transition-transform duration-200 ${
+                      tipsDrawerOpen ? 'rotate-180' : ''
+                    }`}
+                  />
+                </button>
+
+                {tipsDrawerOpen && (
+                  <div className="mt-2 bg-slate-950/90 border border-slate-800 rounded-xl p-2.5 space-y-2.5">
+                    {/* Round Kickoff Toggle inside Dropdown */}
+                    <div className="flex items-center justify-between gap-2 pb-2 border-b border-slate-800/80">
+                      <span className="text-[10px] font-bold uppercase text-slate-400">
+                        Round {currentRound} Visibility
+                      </span>
+                      <button
+                        type="button"
+                        onClick={() => toggleRoundStarted(Number(currentRound))}
+                        className={`flex items-center gap-1 px-2 py-1 rounded-md text-[10px] font-bold border transition ${
+                          isCurrentRoundLocked
+                            ? 'bg-emerald-950/70 border-emerald-600/70 text-emerald-300'
+                            : 'bg-slate-900 border-slate-700 text-slate-300 hover:border-slate-500'
                         }`}
-                      />
-                    ))}
-                  </div>
-                </div>
+                      >
+                        {isCurrentRoundLocked ? (
+                          <>
+                            <Eye className="w-3 h-3 text-emerald-400" />
+                            <span>Started (Visible)</span>
+                          </>
+                        ) : (
+                          <>
+                            <EyeOff className="w-3 h-3 text-slate-400" />
+                            <span>Pre-Kickoff (Hidden)</span>
+                          </>
+                        )}
+                      </button>
+                    </div>
 
-                <div className="bg-slate-950 p-3 rounded-xl border border-slate-800">
-                  <div className="text-[10px] uppercase font-bold text-slate-400 mb-1 flex items-center justify-between">
-                    <span>Round {currentRound} Pick</span>
-                    <Lock className="w-3 h-3 text-amber-400" />
+                    {/* Compact Horizontal Scrollable Leaderboard Table */}
+                    <div className="overflow-x-auto max-h-72">
+                      <table className="w-full text-left border-collapse text-[11px]">
+                        <thead>
+                          <tr className="border-b border-slate-800 text-[10px] font-bold uppercase text-slate-400">
+                            <th className="py-2 px-2 sticky left-0 bg-slate-950 z-10 min-w-[110px]">
+                              Player
+                            </th>
+                            <th className="py-2 px-1.5 text-center">Lives</th>
+                            {horizontalRounds.map((rNum) => {
+                              const roundStarted = startedRoundsForActive.has(rNum);
+                              return (
+                                <th
+                                  key={rNum}
+                                  onClick={() => {
+                                    setCurrentRound(rNum);
+                                    setStatusMessage('');
+                                  }}
+                                  title={`Jump to Round ${rNum}`}
+                                  className={`py-2 px-2 text-center min-w-[68px] cursor-pointer hover:text-white ${
+                                    rNum === Number(currentRound)
+                                      ? 'text-blue-400 bg-blue-950/40'
+                                      : ''
+                                  }`}
+                                >
+                                  <div className="flex items-center justify-center gap-1">
+                                    <span>R{rNum}</span>
+                                    {roundStarted && (
+                                      <span className="w-1.5 h-1.5 rounded-full bg-emerald-400" />
+                                    )}
+                                  </div>
+                                </th>
+                              );
+                            })}
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-slate-800/60">
+                          {leagueMembers.map((member, idx) => {
+                            const isMe = member.user_id === session.user.id;
+                            const isEliminated =
+                              member.lives <= 0 || member.status === 'eliminated';
+                            const displayName = member.profiles?.username || 'Player';
+
+                            return (
+                              <tr
+                                key={member.id}
+                                className={
+                                  isEliminated
+                                    ? 'opacity-45 bg-rose-950/10'
+                                    : isMe
+                                    ? 'bg-blue-950/20'
+                                    : ''
+                                }
+                              >
+                                <td className="py-2 px-2 sticky left-0 bg-slate-950 z-10 whitespace-nowrap font-bold">
+                                  <div className="flex items-center gap-1.5">
+                                    <span className="text-[10px] font-mono text-slate-500">
+                                      {idx + 1}.
+                                    </span>
+                                    <span className="text-slate-100 truncate max-w-[75px]">
+                                      {displayName}
+                                    </span>
+                                    {isMe && (
+                                      <span className="text-[9px] px-1 rounded bg-blue-500/20 text-blue-300">
+                                        YOU
+                                      </span>
+                                    )}
+                                  </div>
+                                </td>
+
+                                <td className="py-2 px-1.5 text-center whitespace-nowrap">
+                                  {isEliminated ? (
+                                    <span className="text-[9px] font-black text-rose-400">OUT</span>
+                                  ) : (
+                                    <span className="inline-flex items-center gap-0.5 font-bold text-rose-400">
+                                      {member.lives}
+                                      <Heart className="w-2.5 h-2.5 fill-rose-500 text-rose-500" />
+                                    </span>
+                                  )}
+                                </td>
+
+                                {horizontalRounds.map((rNum) => {
+                                  const pick = allLeaguePicks.find(
+                                    (p) =>
+                                      p.user_id === member.user_id &&
+                                      Number(p.round_number) === rNum
+                                  );
+                                  const canSeePick = isMe || startedRoundsForActive.has(rNum);
+
+                                  return (
+                                    <td
+                                      key={rNum}
+                                      className={`py-1.5 px-1.5 text-center whitespace-nowrap ${
+                                        rNum === Number(currentRound) ? 'bg-blue-950/20' : ''
+                                      }`}
+                                    >
+                                      {!pick ? (
+                                        <span className="text-slate-600">—</span>
+                                      ) : !canSeePick ? (
+                                        <span className="inline-flex items-center gap-0.5 text-[10px] text-slate-400 bg-slate-800 px-1.5 py-0.5 rounded">
+                                          <Lock className="w-2.5 h-2.5 text-amber-400" />
+                                          Tipped
+                                        </span>
+                                      ) : (
+                                        <span
+                                          className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded border text-[10px] font-bold ${
+                                            pick.status === 'win'
+                                              ? 'bg-emerald-950/70 border-emerald-500/50 text-emerald-300'
+                                              : pick.status === 'loss'
+                                              ? 'bg-rose-950/70 border-rose-500/50 text-rose-300 line-through'
+                                              : 'bg-slate-800 border-slate-700 text-white'
+                                          }`}
+                                        >
+                                          {pick.teams?.logo_url && (
+                                            <img
+                                              src={pick.teams.logo_url}
+                                              alt=""
+                                              className="w-3 h-3 object-contain"
+                                              onError={handleLogoError}
+                                            />
+                                          )}
+                                          <span>
+                                            {pick.teams?.short_code || pick.teams?.name || 'Team'}
+                                          </span>
+                                        </span>
+                                      )}
+                                    </td>
+                                  );
+                                })}
+                              </tr>
+                            );
+                          })}
+                        </tbody>
+                      </table>
+                    </div>
                   </div>
-                  <div className="font-bold text-sm text-white truncate">
-                    {activeRoundPick ? activeRoundPick.team_name : 'No selection'}
+                )}
+              </div>
+            )}
+
+            {/* Active Entry Summary */}
+            {activeEntry && isSidebarOpen && (
+              <div className="mt-4 space-y-2.5 border-t border-slate-800 pt-3">
+                <div className="bg-slate-950 p-2.5 rounded-lg border border-slate-800 flex items-center justify-between">
+                  <div>
+                    <div className="text-[10px] uppercase font-bold text-slate-400">
+                      Remaining Lives
+                    </div>
+                    <div className="flex gap-1 mt-1">
+                      {Array.from({ length: activeEntry.totalLives }).map((_, i) => (
+                        <Heart
+                          key={i}
+                          className={`w-4 h-4 ${
+                            i < activeEntry.remainingLives
+                              ? 'fill-rose-500 text-rose-500'
+                              : 'fill-slate-800 text-slate-700'
+                          }`}
+                        />
+                      ))}
+                    </div>
+                  </div>
+                  <div className="text-right">
+                    <div className="text-[10px] uppercase font-bold text-slate-400">
+                      R{currentRound} Pick
+                    </div>
+                    <div className="font-bold text-xs text-white truncate max-w-[120px] mt-0.5">
+                      {activeRoundPick ? activeRoundPick.team_name : 'None'}
+                    </div>
                   </div>
                 </div>
               </div>
@@ -957,7 +1173,7 @@ export default function App() {
           </div>
 
           {isSidebarOpen && (
-            <div className="space-y-2 pt-4 border-t border-slate-800">
+            <div className="space-y-1.5 pt-3 border-t border-slate-800 mt-4">
               {activeEntry && (
                 <button
                   onClick={() => {
@@ -966,7 +1182,7 @@ export default function App() {
                     setSetupStep('league');
                     setPicks([]);
                   }}
-                  className="w-full flex items-center justify-center gap-2 py-2 px-3 rounded-xl bg-slate-800 hover:bg-slate-700 text-xs font-bold text-slate-300 transition"
+                  className="w-full flex items-center justify-center gap-2 py-2 px-3 rounded-lg bg-slate-800 hover:bg-slate-700 text-xs font-bold text-slate-300 transition"
                 >
                   <RotateCcw className="w-3.5 h-3.5" />
                   <span>All Leagues / Lobby</span>
@@ -974,7 +1190,7 @@ export default function App() {
               )}
               <button
                 onClick={handleSignOut}
-                className="w-full flex items-center justify-center gap-2 py-2 px-3 rounded-xl bg-rose-950/40 hover:bg-rose-900/50 text-xs font-bold text-rose-300 border border-rose-900/50 transition"
+                className="w-full flex items-center justify-center gap-2 py-2 px-3 rounded-lg bg-rose-950/40 hover:bg-rose-900/50 text-xs font-bold text-rose-300 border border-rose-900/50 transition"
               >
                 <LogOut className="w-3.5 h-3.5" />
                 <span>Sign Out</span>
@@ -987,27 +1203,39 @@ export default function App() {
       {/* Main Container */}
       <div
         className={`flex-1 flex flex-col min-h-screen transition-all duration-300 ${
-          sidebarPinned ? 'md:ml-80' : 'md:ml-16'
+          sidebarPinned ? 'md:ml-96' : 'md:ml-14'
         }`}
       >
-        {/* Top Header Bar with Quick Sign Out */}
-        <header className="flex items-center justify-between px-6 py-3 bg-slate-900/80 border-b border-slate-800/80 backdrop-blur-sm">
-          <div className="flex items-center gap-3">
+        {/* Top Header Bar */}
+        <header className="flex items-center justify-between px-5 py-2.5 bg-slate-900/80 border-b border-slate-800/80 backdrop-blur-sm">
+          <div className="flex items-center gap-2.5">
             <button
               onClick={() => setSidebarPinned(!sidebarPinned)}
-              className="md:hidden p-2 bg-slate-800 rounded-lg text-slate-300"
+              className="md:hidden p-1.5 bg-slate-800 rounded-lg text-slate-300"
             >
-              <Menu className="w-5 h-5" />
+              <Menu className="w-4 h-4" />
             </button>
             <span className="font-black text-xs sm:text-sm tracking-wider text-slate-200">
               LAST MAN STANDING
             </span>
           </div>
 
-          <div className="flex items-center gap-3">
+          <div className="flex items-center gap-2.5">
             <span className="text-xs text-slate-400 hidden sm:inline">
               Player: <strong className="text-white">{profile?.username || session.user.email}</strong>
             </span>
+            {activeEntry?.compId && (
+              <button
+                onClick={() => {
+                  setSidebarPinned(true);
+                  setTipsDrawerOpen(true);
+                }}
+                className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-blue-950/60 hover:bg-blue-900/60 border border-blue-800/70 text-xs font-bold text-blue-200 transition"
+              >
+                <Users className="w-3.5 h-3.5 text-blue-400" />
+                <span>League Tips</span>
+              </button>
+            )}
             {activeEntry && (
               <button
                 onClick={() => {
@@ -1016,14 +1244,14 @@ export default function App() {
                   setSetupStep('league');
                   setPicks([]);
                 }}
-                className="px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-xs font-bold text-slate-200 transition"
+                className="px-2.5 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-xs font-bold text-slate-200 transition"
               >
                 My Leagues ({myLeagues.length})
               </button>
             )}
             <button
               onClick={handleSignOut}
-              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-rose-950/50 hover:bg-rose-900/60 border border-rose-800/60 text-xs font-bold text-rose-300 transition"
+              className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-rose-950/50 hover:bg-rose-900/60 border border-rose-800/60 text-xs font-bold text-rose-300 transition"
             >
               <LogOut className="w-3.5 h-3.5" />
               <span>Log Out</span>
@@ -1033,29 +1261,27 @@ export default function App() {
 
         {/* View 1: Entry / Lobby Screen */}
         {!activeEntry ? (
-          <div className="flex-1 flex items-center justify-center p-6">
-            <div className="max-w-xl w-full bg-slate-900 border border-slate-800 rounded-2xl p-8 shadow-2xl relative">
-              <div className="flex items-center justify-between mb-6">
-                <div className="flex items-center gap-3">
-                  <div className="p-3 bg-amber-500/10 rounded-xl text-amber-400 border border-amber-500/20">
-                    <Trophy className="w-6 h-6" />
-                  </div>
-                  <div>
-                    <h1 className="text-2xl font-black">Welcome, {profile?.username || 'Player'}</h1>
-                    <p className="text-slate-400 text-sm">
-                      Open a saved league, create a new comp, or join with an invite code
-                    </p>
-                  </div>
+          <div className="flex-1 flex items-center justify-center p-5">
+            <div className="max-w-lg w-full bg-slate-900 border border-slate-800 rounded-2xl p-6 shadow-2xl relative">
+              <div className="flex items-center gap-3 mb-5">
+                <div className="p-2.5 bg-amber-500/10 rounded-xl text-amber-400 border border-amber-500/20">
+                  <Trophy className="w-5 h-5" />
+                </div>
+                <div>
+                  <h1 className="text-xl font-black">Welcome, {profile?.username || 'Player'}</h1>
+                  <p className="text-slate-400 text-xs">
+                    Open a saved league, create a new comp, or join with an invite code
+                  </p>
                 </div>
               </div>
 
-              <div className="grid grid-cols-2 gap-3 mb-6">
+              <div className="grid grid-cols-2 gap-2.5 mb-5">
                 <button
                   onClick={() => {
                     setFormError('');
                     setActiveModal('create');
                   }}
-                  className="flex items-center justify-center gap-2 p-3.5 bg-blue-950/60 border border-blue-800/80 hover:bg-blue-900/60 rounded-xl text-xs font-bold text-blue-200 transition"
+                  className="flex items-center justify-center gap-2 p-3 bg-blue-950/60 border border-blue-800/80 hover:bg-blue-900/60 rounded-xl text-xs font-bold text-blue-200 transition"
                 >
                   <PlusCircle className="w-4 h-4 text-blue-400" />
                   <span>Create Comp with Friends</span>
@@ -1066,7 +1292,7 @@ export default function App() {
                     setFormError('');
                     setActiveModal('join');
                   }}
-                  className="flex items-center justify-center gap-2 p-3.5 bg-emerald-950/60 border border-emerald-800/80 hover:bg-emerald-900/60 rounded-xl text-xs font-bold text-emerald-200 transition"
+                  className="flex items-center justify-center gap-2 p-3 bg-emerald-950/60 border border-emerald-800/80 hover:bg-emerald-900/60 rounded-xl text-xs font-bold text-emerald-200 transition"
                 >
                   <LogIn className="w-4 h-4 text-emerald-400" />
                   <span>Join with Invite Code</span>
@@ -1074,8 +1300,8 @@ export default function App() {
               </div>
 
               {myLeagues.length > 0 && (
-                <div className="mb-6">
-                  <div className="text-xs font-bold uppercase tracking-wider text-slate-400 mb-2">
+                <div className="mb-5">
+                  <div className="text-[11px] font-bold uppercase tracking-wider text-slate-400 mb-2">
                     Your Saved Competitions ({myLeagues.length})
                   </div>
                   <div className="space-y-2">
@@ -1083,20 +1309,20 @@ export default function App() {
                       <button
                         key={m.id}
                         onClick={() => openSavedLeague(m)}
-                        className="w-full flex items-center justify-between p-4 rounded-xl bg-slate-950 border border-slate-800 hover:border-blue-500 transition text-left"
+                        className="w-full flex items-center justify-between p-3 rounded-xl bg-slate-950 border border-slate-800 hover:border-blue-500 transition text-left"
                       >
                         <div>
                           <div className="flex items-center gap-2">
-                            <span className="font-bold text-white">{m.leagues?.name}</span>
+                            <span className="font-bold text-sm text-white">{m.leagues?.name}</span>
                             <span className="text-[10px] font-bold px-2 py-0.5 rounded bg-slate-800 text-blue-300">
                               {m.leagues?.sport || 'NRL'}
                             </span>
                           </div>
-                          <div className="text-xs text-slate-400 font-mono mt-0.5">
+                          <div className="text-[11px] text-slate-400 font-mono mt-0.5">
                             Invite Code: {m.leagues?.invite_code}
                           </div>
                         </div>
-                        <div className="flex items-center gap-3">
+                        <div className="flex items-center gap-2.5">
                           <span className="text-xs font-bold text-rose-400 flex items-center gap-1">
                             {m.lives} <Heart className="w-3.5 h-3.5 fill-rose-500" />
                           </span>
@@ -1108,16 +1334,16 @@ export default function App() {
                 </div>
               )}
 
-              <div className="relative flex py-2 items-center mb-6">
+              <div className="relative flex py-1.5 items-center mb-4">
                 <div className="flex-grow border-t border-slate-800"></div>
-                <span className="flex-shrink mx-4 text-xs font-bold uppercase tracking-widest text-slate-500">
+                <span className="flex-shrink mx-3 text-[10px] font-bold uppercase tracking-widest text-slate-500">
                   Or Practice Solo
                 </span>
                 <div className="flex-grow border-t border-slate-800"></div>
               </div>
 
               {setupStep === 'league' ? (
-                <div className="space-y-3">
+                <div className="space-y-2">
                   {Object.entries(LEAGUE_CONFIG).map(([code, config]) => (
                     <button
                       key={code}
@@ -1125,10 +1351,10 @@ export default function App() {
                         setSelectedLeague(code);
                         setSetupStep('lives');
                       }}
-                      className="w-full flex items-center justify-between p-4 rounded-xl bg-slate-950/60 border border-slate-800 hover:border-blue-500 hover:bg-slate-800 transition group text-left"
+                      className="w-full flex items-center justify-between p-3 rounded-xl bg-slate-950/60 border border-slate-800 hover:border-blue-500 hover:bg-slate-800 transition group text-left"
                     >
                       <div>
-                        <div className="font-bold text-lg text-white group-hover:text-blue-400 transition">
+                        <div className="font-bold text-base text-white group-hover:text-blue-400 transition">
                           {code}
                         </div>
                         <div className="text-xs text-slate-400">{config.name}</div>
@@ -1138,7 +1364,7 @@ export default function App() {
                   ))}
                 </div>
               ) : (
-                <div className="space-y-6">
+                <div className="space-y-4">
                   <div className="flex items-center justify-between">
                     <span className="text-xs font-bold uppercase tracking-wider text-slate-400">
                       Choose Lives
@@ -1150,7 +1376,7 @@ export default function App() {
                       Change Sport ({selectedLeague})
                     </button>
                   </div>
-                  <div className="grid grid-cols-3 gap-3">
+                  <div className="grid grid-cols-3 gap-2.5">
                     {[1, 2, 3].map((count) => (
                       <button
                         key={count}
@@ -1161,14 +1387,14 @@ export default function App() {
                             remainingLives: count
                           })
                         }
-                        className="p-5 rounded-xl bg-slate-950 border border-slate-800 hover:border-rose-500 transition flex flex-col items-center gap-3"
+                        className="p-4 rounded-xl bg-slate-950 border border-slate-800 hover:border-rose-500 transition flex flex-col items-center gap-2"
                       >
                         <div className="flex gap-1">
                           {Array.from({ length: count }).map((_, i) => (
-                            <Heart key={i} className="w-5 h-5 fill-rose-500 text-rose-500" />
+                            <Heart key={i} className="w-4 h-4 fill-rose-500 text-rose-500" />
                           ))}
                         </div>
-                        <div className="text-center font-bold text-white text-sm">
+                        <div className="text-center font-bold text-white text-xs">
                           {count} {count === 1 ? 'Life' : 'Lives'}
                         </div>
                       </button>
@@ -1179,226 +1405,73 @@ export default function App() {
             </div>
           </div>
         ) : (
-          /* View 2: Active League Standings + Team Selection Dashboard */
-          <main className="p-6 md:p-10 space-y-8">
-            {activeEntry.compId && (
-              <section className="bg-slate-900 border border-slate-800 rounded-2xl overflow-hidden shadow-2xl">
-                <div className="p-5 border-b border-slate-800 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
-                  <div className="flex items-center gap-3">
-                    <div className="p-2.5 bg-blue-500/10 rounded-xl text-blue-400 border border-blue-500/20">
-                      <Users className="w-5 h-5" />
-                    </div>
-                    <div>
-                      <div className="flex items-center gap-2">
-                        <h2 className="font-black text-lg text-white">
-                          {activeEntry.compName} — Running Order
-                        </h2>
-                        {activeEntry.inviteCode && (
-                          <span className="text-xs font-mono px-2 py-0.5 rounded bg-slate-950 border border-slate-700 text-amber-400">
-                            Code: {activeEntry.inviteCode}
-                          </span>
-                        )}
-                      </div>
-                      <p className="text-xs text-slate-400">
-                        Ranked by remaining lives • Horizontal timeline of round selections
-                      </p>
-                    </div>
-                  </div>
-
-                  <button
-                    onClick={() => setRevealCurrentRound(!revealCurrentRound)}
-                    className={`flex items-center gap-2 px-3.5 py-2 rounded-xl text-xs font-bold border transition ${
-                      revealCurrentRound
-                        ? 'bg-emerald-950/60 border-emerald-600 text-emerald-300'
-                        : 'bg-slate-950 border-slate-700 text-slate-300 hover:border-slate-500'
-                    }`}
-                  >
-                    {revealCurrentRound ? (
-                      <>
-                        <Eye className="w-4 h-4 text-emerald-400" />
-                        <span>Round {currentRound} Started (Picks Visible)</span>
-                      </>
-                    ) : (
-                      <>
-                        <EyeOff className="w-4 h-4 text-slate-400" />
-                        <span>Round {currentRound} Open (Other Picks Hidden)</span>
-                      </>
-                    )}
-                  </button>
-                </div>
-
-                <div className="overflow-x-auto">
-                  <table className="w-full text-left border-collapse">
-                    <thead>
-                      <tr className="bg-slate-950/90 border-b border-slate-800 text-[11px] font-bold uppercase tracking-wider text-slate-400">
-                        <th className="py-3.5 px-4 sticky left-0 bg-slate-950 z-10 min-w-[180px]">
-                          Player
-                        </th>
-                        <th className="py-3.5 px-4 text-center min-w-[90px]">Lives</th>
-                        {horizontalRounds.map((rNum) => (
-                          <th
-                            key={rNum}
-                            className={`py-3.5 px-3 text-center min-w-[115px] ${
-                              rNum === currentRound ? 'text-blue-400 bg-blue-950/20' : ''
-                            }`}
-                          >
-                            R{rNum}
-                          </th>
-                        ))}
-                      </tr>
-                    </thead>
-                    <tbody className="divide-y divide-slate-800/70 text-sm">
-                      {leagueMembers.map((member, idx) => {
-                        const isMe = member.user_id === session.user.id;
-                        const isEliminated = member.lives <= 0 || member.status === 'eliminated';
-                        const displayName = member.profiles?.username || 'Player';
-
-                        return (
-                          <tr
-                            key={member.id}
-                            className={
-                              isEliminated
-                                ? 'opacity-45 bg-rose-950/10'
-                                : isMe
-                                ? 'bg-blue-950/15'
-                                : 'hover:bg-slate-800/30'
-                            }
-                          >
-                            <td className="py-3 px-4 sticky left-0 bg-slate-900 z-10 whitespace-nowrap font-bold">
-                              <div className="flex items-center gap-2.5">
-                                <span className="text-xs font-mono text-slate-500 w-4">
-                                  {idx + 1}.
-                                </span>
-                                <span className="text-white">{displayName}</span>
-                                {isMe && (
-                                  <span className="text-[10px] px-1.5 py-0.5 rounded bg-blue-500/20 text-blue-300 font-black">
-                                    YOU
-                                  </span>
-                                )}
-                              </div>
-                            </td>
-
-                            <td className="py-3 px-4 text-center whitespace-nowrap">
-                              {isEliminated ? (
-                                <span className="text-[10px] font-black uppercase px-2 py-0.5 rounded bg-rose-500/20 text-rose-400">
-                                  OUT
-                                </span>
-                              ) : (
-                                <div className="inline-flex items-center gap-1">
-                                  {Array.from({ length: member.lives }).map((_, i) => (
-                                    <Heart
-                                      key={i}
-                                      className="w-3.5 h-3.5 fill-rose-500 text-rose-500"
-                                    />
-                                  ))}
-                                </div>
-                              )}
-                            </td>
-
-                            {horizontalRounds.map((rNum) => {
-                              const pick = allLeaguePicks.find(
-                                (p) => p.user_id === member.user_id && p.round_number === rNum
-                              );
-
-                              const canSeePick =
-                                rNum < currentRound ||
-                                (rNum === currentRound && revealCurrentRound) ||
-                                isMe;
-
-                              return (
-                                <td
-                                  key={rNum}
-                                  className={`py-2.5 px-3 text-center whitespace-nowrap ${
-                                    rNum === currentRound ? 'bg-blue-950/10' : ''
-                                  }`}
-                                >
-                                  {!pick ? (
-                                    <span className="text-slate-600 text-xs">—</span>
-                                  ) : !canSeePick ? (
-                                    <span className="inline-flex items-center gap-1 text-[11px] font-semibold text-slate-400 bg-slate-800/80 px-2.5 py-1 rounded-lg border border-slate-700/60">
-                                      <Lock className="w-3 h-3 text-amber-400" />
-                                      Tipped
-                                    </span>
-                                  ) : (
-                                    <div
-                                      className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg border text-xs font-bold ${
-                                        pick.status === 'win'
-                                          ? 'bg-emerald-950/70 border-emerald-500/50 text-emerald-300'
-                                          : pick.status === 'loss'
-                                          ? 'bg-rose-950/70 border-rose-500/50 text-rose-300 line-through'
-                                          : 'bg-slate-800 border-slate-700 text-white'
-                                      }`}
-                                    >
-                                      {pick.teams?.logo_url && (
-                                        <img
-                                          src={pick.teams.logo_url}
-                                          alt=""
-                                          className="w-4 h-4 object-contain"
-                                          onError={handleLogoError}
-                                        />
-                                      )}
-                                      <span>
-                                        {pick.teams?.short_code || pick.teams?.name || 'Team'}
-                                      </span>
-                                    </div>
-                                  )}
-                                </td>
-                              );
-                            })}
-                          </tr>
-                        );
-                      })}
-                    </tbody>
-                  </table>
-                </div>
-              </section>
-            )}
-
-            <div className="flex flex-col sm:flex-row sm:items-center justify-between bg-slate-900 border border-slate-800 p-5 rounded-2xl gap-4">
+          /* View 2: Compact Team Selection Dashboard */
+          <main className="p-4 md:p-6 max-w-7xl w-full mx-auto space-y-4">
+            {/* Compact Round Navigation Header */}
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between bg-slate-900 border border-slate-800 px-4 py-3 rounded-xl gap-3">
               <div>
-                <div className="flex items-center gap-2 text-xs font-bold text-slate-400 uppercase tracking-wider">
-                  <Calendar className="w-4 h-4 text-blue-400" />
+                <div className="flex items-center gap-2 text-[11px] font-bold text-slate-400 uppercase tracking-wider">
+                  <Calendar className="w-3.5 h-3.5 text-blue-400" />
                   <span>
                     {activeEntry.compName ? `${activeEntry.compName} • ` : ''}
                     {activeEntry.league} • Round {currentRound}
                   </span>
+                  {activeEntry.inviteCode && (
+                    <span className="font-mono text-amber-400 bg-slate-950 px-1.5 py-0.5 rounded border border-slate-800">
+                      Code: {activeEntry.inviteCode}
+                    </span>
+                  )}
                 </div>
-                <h3 className="text-2xl font-black text-white mt-1">
-                  Pick Your Club ({teams.length} Teams)
-                </h3>
+                <div className="flex items-center gap-2.5 mt-0.5">
+                  <h3 className="text-lg font-black text-white">
+                    Pick Your Club — Round {currentRound}
+                  </h3>
+                  <span className="text-xs font-semibold text-slate-400">
+                    ({picks.length}/{teams.length} assigned)
+                  </span>
+                </div>
               </div>
 
-              <div className="flex items-center gap-2">
+              <div className="flex items-center gap-1.5">
                 <button
-                  onClick={() => setCurrentRound((r) => Math.max(1, r - 1))}
+                  onClick={() => {
+                    setCurrentRound((r) => Math.max(1, r - 1));
+                    setStatusMessage('');
+                  }}
                   disabled={currentRound === 1}
-                  className="px-4 py-2 bg-slate-800 hover:bg-slate-700 disabled:opacity-30 text-xs font-bold rounded-lg transition"
+                  className="px-3 py-1.5 bg-slate-800 hover:bg-slate-700 disabled:opacity-30 text-xs font-bold rounded-lg transition"
                 >
-                  Previous Round
+                  Prev
                 </button>
-                <span className="text-xs font-mono font-bold px-3 py-2 bg-slate-950 rounded-lg border border-slate-800">
+                <span className="text-xs font-mono font-bold px-2.5 py-1.5 bg-slate-950 rounded-lg border border-slate-800 text-blue-400">
                   R{currentRound}
                 </span>
                 <button
-                  onClick={() => setCurrentRound((r) => r + 1)}
-                  className="px-4 py-2 bg-slate-800 hover:bg-slate-700 text-xs font-bold rounded-lg transition"
+                  onClick={() => {
+                    setCurrentRound((r) => r + 1);
+                    setStatusMessage('');
+                  }}
+                  className="px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-xs font-bold rounded-lg transition"
                 >
-                  Next Round
+                  Next
                 </button>
               </div>
             </div>
 
             {statusMessage && (
-              <div className="p-3 bg-blue-950/40 border border-blue-800/60 rounded-xl text-xs text-blue-300 flex items-center gap-2">
-                <CheckCircle2 className="w-4 h-4 text-blue-400 shrink-0" />
+              <div className="px-3.5 py-2 bg-blue-950/40 border border-blue-800/60 rounded-lg text-xs text-blue-300 flex items-center gap-2">
+                <CheckCircle2 className="w-3.5 h-3.5 text-blue-400 shrink-0" />
                 <span>{statusMessage}</span>
               </div>
             )}
 
-            <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-3.5">
+            {/* Compact 5-Column Team Grid */}
+            <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 xl:grid-cols-5 gap-2.5">
               {teams.map((team, index) => {
-                const isSelectedThisRound = activeRoundPick?.team_id === team.id;
-                const isBurnedInPriorRound = pickedTeamIds.has(team.id) && !isSelectedThisRound;
+                const usedInRound = teamRoundMap.get(String(team.id));
+                const isSelectedThisRound = usedInRound === Number(currentRound);
+                const isUsedInAnotherRound =
+                  usedInRound !== undefined && usedInRound !== Number(currentRound);
 
                 const { opponentIndex, isHome } = getOpponentInfo(index, teams.length, currentRound);
                 const opponent = opponentIndex !== null ? teams[opponentIndex] : null;
@@ -1409,20 +1482,26 @@ export default function App() {
                 return (
                   <button
                     key={team.id}
-                    disabled={isBurnedInPriorRound || activeEntry.remainingLives <= 0}
+                    disabled={
+                      isUsedInAnotherRound ||
+                      isCurrentRoundLocked ||
+                      activeEntry.remainingLives <= 0
+                    }
                     onClick={() => handleSelectTeam(team, fixtureText)}
-                    className={`p-4 rounded-xl border text-left flex flex-col justify-between min-h-[145px] transition-all relative ${
+                    className={`p-2.5 rounded-xl border text-left flex flex-col justify-between min-h-[96px] transition-all relative ${
                       isSelectedThisRound
-                        ? 'bg-blue-950/90 border-blue-500 ring-2 ring-blue-500/50 shadow-lg'
-                        : isBurnedInPriorRound
+                        ? 'bg-blue-950/90 border-blue-500 ring-1 ring-blue-500/60 shadow-md'
+                        : isUsedInAnotherRound
                         ? 'bg-slate-900/30 border-slate-800/40 opacity-40 cursor-not-allowed'
-                        : 'bg-slate-900 border-slate-800 hover:border-slate-600 hover:bg-slate-800/60'
+                        : isCurrentRoundLocked
+                        ? 'bg-slate-900/60 border-slate-800 opacity-60 cursor-not-allowed'
+                        : 'bg-slate-900 border-slate-800 hover:border-slate-600 hover:bg-slate-800/70'
                     }`}
                   >
                     <div>
-                      <div className="flex items-center justify-between gap-2 mb-3">
-                        <div className="flex items-center gap-2.5">
-                          <div className="w-8 h-8 rounded-lg bg-slate-800/80 p-1 flex items-center justify-center overflow-hidden border border-slate-700/60 shrink-0">
+                      <div className="flex items-center justify-between gap-1.5 mb-1.5">
+                        <div className="flex items-center gap-1.5">
+                          <div className="w-6 h-6 rounded-md bg-slate-800/90 p-0.5 flex items-center justify-center overflow-hidden border border-slate-700/60 shrink-0">
                             {team.logo_url ? (
                               <img
                                 src={team.logo_url}
@@ -1431,44 +1510,43 @@ export default function App() {
                                 onError={handleLogoError}
                               />
                             ) : (
-                              <span className="font-mono text-[10px] font-bold text-slate-400">
+                              <span className="font-mono text-[9px] font-bold text-slate-400">
                                 {team.short_code}
                               </span>
                             )}
                           </div>
-                          <span className="font-mono text-xs font-bold text-slate-400">
+                          <span className="font-mono text-[11px] font-bold text-slate-400">
                             {team.short_code}
                           </span>
                         </div>
 
                         <div
-                          className={`flex items-center gap-1 px-2 py-0.5 rounded text-[11px] font-bold font-mono ${
+                          className={`flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-bold font-mono ${
                             isSelectedThisRound
                               ? 'bg-blue-900/80 text-blue-200 border border-blue-700'
                               : 'bg-slate-800 text-slate-300 border border-slate-700'
                           }`}
                         >
-                          <Swords className="w-3 h-3 text-slate-400" />
+                          <Swords className="w-2.5 h-2.5 text-slate-400" />
                           <span>{fixtureText}</span>
                         </div>
                       </div>
 
-                      <div className="font-bold text-base text-white line-clamp-1">{team.name}</div>
-                      <div className="text-[11px] text-slate-400 mt-0.5">
-                        {isHome ? 'Home against' : 'Away at'} {opponent?.name || 'TBD'}
-                      </div>
+                      <div className="font-bold text-xs text-white line-clamp-1">{team.name}</div>
                     </div>
 
-                    <div className="text-[10px] font-bold uppercase tracking-wider mt-3 pt-2 border-t border-slate-800/60 flex items-center justify-between">
+                    <div className="text-[9px] font-bold uppercase tracking-wider mt-2 pt-1.5 border-t border-slate-800/60 flex items-center justify-between">
                       {isSelectedThisRound ? (
                         <>
-                          <span className="text-blue-400 font-black">Locked In</span>
-                          <CheckCircle2 className="w-3.5 h-3.5 text-blue-400" />
+                          <span className="text-blue-400 font-black">Locked (R{currentRound})</span>
+                          <CheckCircle2 className="w-3 h-3 text-blue-400" />
                         </>
-                      ) : isBurnedInPriorRound ? (
-                        <span className="text-slate-600">Already Burned</span>
+                      ) : isUsedInAnotherRound ? (
+                        <span className="text-amber-500/80">Used in R{usedInRound}</span>
+                      ) : isCurrentRoundLocked ? (
+                        <span className="text-slate-500">Round Locked</span>
                       ) : (
-                        <span className="text-slate-500 hover:text-slate-300">Click to Select</span>
+                        <span className="text-slate-500">Select R{currentRound}</span>
                       )}
                     </div>
                   </button>
@@ -1621,20 +1699,4 @@ export default function App() {
                   placeholder="e.g. A8F3K2"
                   value={formInviteCode}
                   onChange={(e) => setFormInviteCode(e.target.value)}
-                  className="w-full bg-slate-950 border border-slate-800 rounded-xl p-3 text-sm font-mono uppercase text-white placeholder-slate-600 focus:outline-none focus:border-emerald-500"
-                />
-              </div>
-
-              <button
-                type="submit"
-                className="w-full py-3 bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-sm rounded-xl transition shadow-lg mt-2"
-              >
-                Join League
-              </button>
-            </form>
-          </div>
-        </div>
-      )}
-    </div>
-  );
-}
+                  className="w-full bg-slate-9
