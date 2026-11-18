@@ -180,6 +180,7 @@ const SPORTSDB_LEAGUE_IDS = {
 };
 
 const TEAM_NAME_ALIASES = {
+  // NRL
   'brisbane broncos': 'BRI', 'broncos': 'BRI',
   'canberra raiders': 'CAN', 'raiders': 'CAN',
   'canterbury-bankstown bulldogs': 'CBY', 'canterbury bulldogs': 'CBY', 'bulldogs': 'CBY',
@@ -198,6 +199,7 @@ const TEAM_NAME_ALIASES = {
   'sydney roosters': 'SYR', 'roosters': 'SYR',
   'wests tigers': 'WST', 'tigers': 'WST',
 
+  // AFL
   'adelaide crows': 'ADE', 'adelaide': 'ADE',
   'brisbane lions': 'BRL', 'brisbane': 'BRL',
   'carlton blues': 'CAR', 'carlton': 'CAR',
@@ -217,26 +219,34 @@ const TEAM_NAME_ALIASES = {
   'west coast eagles': 'WCE', 'west coast': 'WCE',
   'western bulldogs': 'WBD', 'footscray': 'WBD',
 
-  'afc bournemouth': 'BOU', 'bournemouth': 'BOU',
-  'arsenal': 'ARS', 'arsenal fc': 'ARS',
-  'aston villa': 'AVL', 'aston villa fc': 'AVL',
-  'brentford': 'BRE', 'brentford fc': 'BRE',
-  'brighton & hove albion': 'BHA', 'brighton and hove albion': 'BHA', 'brighton & hove albion fc': 'BHA', 'brighton': 'BHA',
-  'chelsea': 'CHE', 'chelsea fc': 'CHE',
-  'coventry city': 'COV', 'coventry city fc': 'COV', 'coventry': 'COV',
-  'crystal palace': 'CRY', 'crystal palace fc': 'CRY',
-  'everton': 'EVE', 'everton fc': 'EVE',
-  'fulham': 'FUL', 'fulham fc': 'FUL',
-  'hull city': 'HUL', 'hull city afc': 'HUL', 'hull': 'HUL',
-  'ipswich town': 'IPS', 'ipswich town fc': 'IPS', 'ipswich': 'IPS',
-  'leeds united': 'LEE', 'leeds united fc': 'LEE', 'leeds': 'LEE',
-  'liverpool': 'LIV', 'liverpool fc': 'LIV',
-  'manchester city': 'MCI', 'manchester city fc': 'MCI', 'man city': 'MCI',
-  'manchester united': 'MUN', 'manchester united fc': 'MUN', 'man united': 'MUN', 'man utd': 'MUN',
-  'newcastle united': 'NEW', 'newcastle united fc': 'NEW', 'newcastle': 'NEW',
-  'nottingham forest': 'NFO', 'nottingham forest fc': 'NFO', "nott'm forest": 'NFO',
-  'sunderland': 'SUN', 'sunderland afc': 'SUN',
-  'tottenham hotspur': 'TOT', 'tottenham hotspur fc': 'TOT', 'tottenham': 'TOT', 'spurs': 'TOT',
+  // EPL (includes football-data.org full names, shortNames & TLAs)
+  'afc bournemouth': 'BOU', 'bournemouth': 'BOU', 'bou': 'BOU',
+  'arsenal': 'ARS', 'arsenal fc': 'ARS', 'ars': 'ARS',
+  'aston villa': 'AVL', 'aston villa fc': 'AVL', 'avl': 'AVL',
+  'brentford': 'BRE', 'brentford fc': 'BRE', 'bre': 'BRE',
+  'brighton & hove albion': 'BHA', 'brighton and hove albion': 'BHA',
+  'brighton & hove albion fc': 'BHA', 'brighton hove': 'BHA', 'brighton': 'BHA', 'bha': 'BHA',
+  'burnley': 'BUR', 'burnley fc': 'BUR', 'bur': 'BUR',
+  'chelsea': 'CHE', 'chelsea fc': 'CHE', 'che': 'CHE',
+  'coventry city': 'COV', 'coventry city fc': 'COV', 'coventry': 'COV', 'cov': 'COV',
+  'crystal palace': 'CRY', 'crystal palace fc': 'CRY', 'cry': 'CRY',
+  'everton': 'EVE', 'everton fc': 'EVE', 'eve': 'EVE',
+  'fulham': 'FUL', 'fulham fc': 'FUL', 'ful': 'FUL',
+  'hull city': 'HUL', 'hull city afc': 'HUL', 'hull': 'HUL', 'hul': 'HUL',
+  'ipswich town': 'IPS', 'ipswich town fc': 'IPS', 'ipswich': 'IPS', 'ips': 'IPS',
+  'leeds united': 'LEE', 'leeds united fc': 'LEE', 'leeds': 'LEE', 'lee': 'LEE',
+  'leicester city': 'LEI', 'leicester city fc': 'LEI', 'leicester': 'LEI', 'lei': 'LEI',
+  'liverpool': 'LIV', 'liverpool fc': 'LIV', 'liv': 'LIV',
+  'manchester city': 'MCI', 'manchester city fc': 'MCI', 'man city': 'MCI', 'mci': 'MCI',
+  'manchester united': 'MUN', 'manchester united fc': 'MUN', 'man united': 'MUN', 'man utd': 'MUN', 'mun': 'MUN',
+  'newcastle united': 'NEW', 'newcastle united fc': 'NEW', 'newcastle': 'NEW', 'new': 'NEW',
+  'nottingham forest': 'NFO', 'nottingham forest fc': 'NFO', 'nottingham': 'NFO', "nott'm forest": 'NFO', 'nfo': 'NFO',
+  'sheffield united': 'SHU', 'sheffield united fc': 'SHU', 'sheffield utd': 'SHU', 'shu': 'SHU',
+  'southampton': 'SOU', 'southampton fc': 'SOU',
+  'sunderland': 'SUN', 'sunderland afc': 'SUN', 'sun': 'SUN',
+  'tottenham hotspur': 'TOT', 'tottenham hotspur fc': 'TOT', 'tottenham': 'TOT', 'spurs': 'TOT', 'tot': 'TOT',
+  'west ham united': 'WHU', 'west ham united fc': 'WHU', 'west ham': 'WHU', 'whu': 'WHU',
+  'wolverhampton wanderers': 'WOL', 'wolverhampton wanderers fc': 'WOL', 'wolverhampton': 'WOL', 'wolves': 'WOL', 'wol': 'WOL',
 };
 
 function resolveTeamShortCode(rawName, teamsList) {
@@ -311,8 +321,7 @@ function getDefaultRoundKickoffUTC(sport, compRoundNumber, actualLeagueRound, db
   return base;
 }
 
-// Strict real-fixtures builder: ONLY renders verified fixtures from the database.
-// Never invents fake matchups when a future round's draw hasn't been released yet.
+// Strict real-fixtures builder: ONLY renders verified fixtures from Supabase.
 function buildRoundMatchups(
   teamsList,
   sportCode,
@@ -351,7 +360,6 @@ function buildRoundMatchups(
     }
   });
 
-  // Only show a Bye club for odd-team leagues (like 17-team NRL) when a full round of games is loaded
   const expectedMatchCount = Math.floor(teamsList.length / 2);
   const byeTeam =
     teamsList.length % 2 === 1 && matches.length >= expectedMatchCount
@@ -450,7 +458,7 @@ export default function App() {
   // Form Inputs for Custom League
   const [formCompName, setFormCompName] = useState('');
   const [formInviteCode, setFormInviteCode] = useState('');
-  const [formSport, setFormSport] = useState('NRL');
+  const [formSport, setFormSport] = useState('EPL');
   const [formLives, setFormLives] = useState(3);
   const [formError, setFormError] = useState('');
 
@@ -538,7 +546,6 @@ export default function App() {
       actualRound,
       dbFixtures
     );
-    // Unreleased future rounds cannot be marked as started
     if (matches.length === 0) return false;
     return nowTick >= matches[0].kickoffUTC.getTime();
   };
@@ -607,7 +614,6 @@ export default function App() {
               dbFixtures
             );
 
-            // Only pick from teams actually playing in this round's official fixtures
             const playingTeamIds = new Set();
             matches.forEach((m) => {
               playingTeamIds.add(String(m.home.id));
@@ -784,7 +790,7 @@ export default function App() {
   };
 
   // =========================================================================
-  // OFFICIAL FIXTURES SYNC (football-data.org for EPL + TheSportsDB for NRL/AFL)
+  // OFFICIAL FIXTURES SYNC (/api/epl-fixtures for EPL + TheSportsDB for NRL/AFL)
   // =========================================================================
   const syncLiveFixtures = async (sportOverride, teamsOverride, silent = false) => {
     const sportCode = sportOverride || activeEntry?.league || 'EPL';
@@ -801,45 +807,49 @@ export default function App() {
     try {
       const rowsMap = new Map();
 
-      // 1. Official Premier League feed (all 380 matches, zero API key needed)
+      // 1. Official Premier League feed via our Vercel serverless proxy (/api/epl-fixtures)
       if (sportCode === 'EPL') {
-        try {
-          const proxyRes = await fetch('/api/epl-fixtures');
-          if (proxyRes.ok) {
-            const proxyJson = await proxyRes.json();
-            (proxyJson.fixtures || []).forEach((m) => {
-              const roundNum = Number(m.round_number);
-              if (!roundNum || !m.kickoff_utc) return;
+        const proxyRes = await fetch('/api/epl-fixtures');
+        const proxyJson = await proxyRes.json();
 
-              const homeCode =
-                resolveTeamShortCode(m.home_name, activeTeamsList) ||
-                resolveTeamShortCode(m.home_short, activeTeamsList);
-              const awayCode =
-                resolveTeamShortCode(m.away_name, activeTeamsList) ||
-                resolveTeamShortCode(m.away_short, activeTeamsList);
-
-              if (!homeCode || !awayCode || homeCode === awayCode) return;
-
-              const parsed = new Date(m.kickoff_utc);
-              if (isNaN(parsed.getTime())) return;
-
-              rowsMap.set(`${sportCode}-${roundNum}-${homeCode}`, {
-                sport: sportCode,
-                round_number: roundNum,
-                home_short_code: homeCode,
-                away_short_code: awayCode,
-                kickoff_utc: parsed.toISOString(),
-              });
-            });
-          }
-        } catch {
-          // Fall through if running purely locally
+        if (!proxyRes.ok || proxyJson?.ok === false) {
+          setStatusMessage(
+            `EPL Sync Error: ${proxyJson?.error || `HTTP ${proxyRes.status}`}`
+          );
+          return null;
         }
+
+        (proxyJson.fixtures || []).forEach((m) => {
+          const roundNum = Number(m.round_number);
+          if (!roundNum || !m.kickoff_utc) return;
+
+          const homeCode =
+            resolveTeamShortCode(m.home_name, activeTeamsList) ||
+            resolveTeamShortCode(m.home_short, activeTeamsList) ||
+            resolveTeamShortCode(m.home_tla, activeTeamsList);
+          const awayCode =
+            resolveTeamShortCode(m.away_name, activeTeamsList) ||
+            resolveTeamShortCode(m.away_short, activeTeamsList) ||
+            resolveTeamShortCode(m.away_tla, activeTeamsList);
+
+          if (!homeCode || !awayCode || homeCode === awayCode) return;
+
+          const parsed = new Date(m.kickoff_utc);
+          if (isNaN(parsed.getTime())) return;
+
+          rowsMap.set(`${sportCode}-${roundNum}-${homeCode}`, {
+            sport: sportCode,
+            round_number: roundNum,
+            home_short_code: homeCode,
+            away_short_code: awayCode,
+            kickoff_utc: parsed.toISOString(),
+          });
+        });
       }
 
-      // 2. For NRL / AFL (or local fallback), query TheSportsDB
+      // 2. For NRL / AFL, query TheSportsDB
       const leagueId = SPORTSDB_LEAGUE_IDS[sportCode];
-      if (leagueId && rowsMap.size === 0) {
+      if (leagueId && rowsMap.size === 0 && sportCode !== 'EPL') {
         const tsdbUrl = `https://www.thesportsdb.com/api/v1/json/123/eventsseason.php?id=${leagueId}&s=${seasonInfo.sportsDbSeason}`;
         const res = await fetch(tsdbUrl);
         if (res.ok) {
@@ -883,7 +893,9 @@ export default function App() {
 
       if (upsertRows.length === 0) {
         if (!silent) {
-          setStatusMessage(`No official ${sportCode} ${seasonInfo.label} fixtures published yet.`);
+          setStatusMessage(
+            `No ${sportCode} ${seasonInfo.label} fixtures returned yet.`
+          );
         }
         return null;
       }
@@ -893,9 +905,7 @@ export default function App() {
         .upsert(upsertRows, { onConflict: 'sport,round_number,home_short_code' });
 
       if (error) {
-        if (!silent) {
-          setStatusMessage(`Error saving synced fixtures: ${error.message}`);
-        }
+        setStatusMessage(`Supabase Fixtures Save Error: ${error.message}`);
         return null;
       }
 
@@ -910,15 +920,13 @@ export default function App() {
 
       if (!silent) {
         setStatusMessage(
-          `Synced ${upsertRows.length} official ${sportCode} (${seasonInfo.label}) fixtures!`
+          `Synced ${upsertRows.length} official ${sportCode} fixtures across all matchweeks!`
         );
       }
 
       return freshFixtures || null;
     } catch (err) {
-      if (!silent) {
-        setStatusMessage(`Fixture sync failed: ${err?.message || 'Network error'}`);
-      }
+      setStatusMessage(`Fixture sync failed: ${err?.message || 'Network error'}`);
       return null;
     } finally {
       setSyncingFixtures(false);
@@ -1178,6 +1186,7 @@ export default function App() {
         await refreshLeagueBoard(activeEntry.compId);
       }
 
+      // Sync latest official fixtures automatically
       const syncedFixtures = await syncLiveFixtures(sportCode, resolvedTeams, true);
       if (syncedFixtures && syncedFixtures.length > 0) {
         const refinedCompRnd = findActiveCompRound(
@@ -1721,7 +1730,7 @@ export default function App() {
   }
 
   const isSidebarOpen = sidebarHovered || sidebarPinned;
-  const maxSelectableCompRounds = Math.max(teams.length || 20, 20);
+  const maxSelectableCompRounds = Math.max(teams.length || 20, 28);
   const dropdownRounds = Array.from({ length: maxSelectableCompRounds }, (_, i) => i + 1);
   const maxRoundDisplay = Math.max(currentRound + 3, 12);
   const horizontalRounds = Array.from({ length: maxRoundDisplay }, (_, i) => i + 1);
@@ -2444,8 +2453,8 @@ export default function App() {
                       <strong className="text-slate-200">
                         {getRoundBracketLabel(currentRound)}
                       </strong>{' '}
-                      haven&apos;t been published yet. Once released, click{' '}
-                      <strong className="text-blue-300">Sync</strong> to load the real schedule.
+                      haven&apos;t been published yet. Click{' '}
+                      <strong className="text-blue-300">Sync</strong> to pull the latest schedule.
                     </p>
                   </div>
                 ) : (

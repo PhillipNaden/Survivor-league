@@ -1,49 +1,48 @@
 export default async function handler(req, res) {
-  try {
-    const [bootstrapRes, fixturesRes] = await Promise.all([
-      fetch('https://fantasy.premierleague.com/api/bootstrap-static/', {
-        headers: { 'User-Agent': 'Mozilla/5.0' }
-      }),
-      fetch('https://fantasy.premierleague.com/api/fixtures/', {
-        headers: { 'User-Agent': 'Mozilla/5.0' }
-      })
-    ]);
+  const token = process.env.FOOTBALL_DATA_KEY || process.env.VITE_FOOTBALL_DATA_KEY;
 
-    if (!bootstrapRes.ok || !fixturesRes.ok) {
-      return res.status(502).json({ error: 'Official Premier League feed temporarily unavailable' });
+  if (!token) {
+    return res.status(500).json({
+      error: 'Missing FOOTBALL_DATA_KEY in Vercel Environment Variables.'
+    });
+  }
+
+  try {
+    // Calling /competitions/PL/matches without ?season= automatically returns the current active EPL season (all 38 matchweeks)
+    const response = await fetch('https://api.football-data.org/v4/competitions/PL/matches', {
+      headers: {
+        'X-Auth-Token': token
+      }
+    });
+
+    const data = await response.json();
+
+    if (!response.ok) {
+      return res.status(response.status).json({
+        error: data?.message || `football-data.org returned HTTP ${response.status}`
+      });
     }
 
-    const bootstrap = await bootstrapRes.json();
-    const rawFixtures = await fixturesRes.json();
-
-    const teamById = new Map(
-      (bootstrap.teams || []).map((t) => [
-        t.id,
-        { name: t.name, short_name: t.short_name }
-      ])
-    );
-
-    const mapped = (rawFixtures || [])
-      .filter((f) => f.event && f.kickoff_time)
-      .map((f) => {
-        const home = teamById.get(f.team_h);
-        const away = teamById.get(f.team_a);
-        return {
-          round_number: Number(f.event),
-          home_name: home?.name || '',
-          home_short: home?.short_name || '',
-          away_name: away?.name || '',
-          away_short: away?.short_name || '',
-          kickoff_utc: f.kickoff_time,
-          finished: Boolean(f.finished),
-          home_score: f.team_h_score,
-          away_score: f.team_a_score
-        };
-      });
+    const mapped = (data.matches || [])
+      .filter((m) => m.matchday && m.utcDate && m.homeTeam && m.awayTeam)
+      .map((m) => ({
+        round_number: Number(m.matchday),
+        home_name: m.homeTeam.name || '',
+        home_short: m.homeTeam.shortName || m.homeTeam.tla || '',
+        home_tla: m.homeTeam.tla || '',
+        away_name: m.awayTeam.name || '',
+        away_short: m.awayTeam.shortName || m.awayTeam.tla || '',
+        away_tla: m.awayTeam.tla || '',
+        kickoff_utc: m.utcDate,
+        status: m.status,
+        winner: m.score?.winner || null
+      }));
 
     res.setHeader('Cache-Control', 's-maxage=300, stale-while-revalidate=600');
     return res.status(200).json({ fixtures: mapped });
   } catch (err) {
-    return res.status(500).json({ error: err?.message || 'Failed to fetch EPL fixtures' });
+    return res.status(500).json({
+      error: err?.message || 'Failed to reach football-data.org'
+    });
   }
 }
