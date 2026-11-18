@@ -2383,9 +2383,8 @@ export default function App() {
                   <div className="flex items-center gap-2">
                     <Calendar className="w-4 h-4 text-blue-400 shrink-0" />
                     <span className="font-black text-xs sm:text-sm text-white">
-                      Round {currentRound} ({getRoundBracketLabel(currentRound)}) —{' '}
-                      {roundMatches.length} Games
-                    </span>
+  Round {currentRound} ({getRoundBracketLabel(currentRound)})
+</span>
                     <span className="text-xs text-slate-400 hidden sm:inline">
                       • {picks.length}/{teams.length} clubs used
                     </span>
