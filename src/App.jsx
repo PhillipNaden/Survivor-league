@@ -486,6 +486,11 @@ export default function App() {
 
   const userTimeZone = getSafeTimeZone();
 
+  const closeMobileSidebar = () => {
+    setSidebarPinned(false);
+    setSidebarHovered(false);
+  };
+
   useEffect(() => {
     const timer = setInterval(() => setNowTick(Date.now()), 15000);
     return () => clearInterval(timer);
@@ -564,7 +569,7 @@ export default function App() {
   };
 
   // =========================================================================
-  // AUTOMATIC MISSED-PICK ENFORCEMENT (Only runs on rounds with real fixtures)
+  // AUTOMATIC MISSED-PICK ENFORCEMENT
   // =========================================================================
   useEffect(() => {
     if (
@@ -941,7 +946,7 @@ export default function App() {
     safeSetStorage(LAST_LEAGUE_STORAGE_KEY, membership.league_id);
     setStatusMessage('');
     setActiveTab('picks');
-    setSidebarPinned(false);
+    closeMobileSidebar();
     setActiveEntry({
       league: sportCode,
       season: membership.leagues.season || getActiveSeasonInfo(sportCode).label,
@@ -1130,6 +1135,7 @@ export default function App() {
   const handleSignOut = async () => {
     safeRemoveStorage(LAST_LEAGUE_STORAGE_KEY);
     await supabase.auth.signOut();
+    closeMobileSidebar();
     setActiveEntry(null);
     setSession(null);
     setProfile(null);
@@ -1192,12 +1198,10 @@ export default function App() {
           await refreshLeagueBoard(activeEntry.compId);
         }
 
-        // Unblock mobile & desktop UI right away before running background API sync
         if (!cancelled) {
           setLoading(false);
         }
 
-        // Run background sync silently so slow mobile connections never stall rendering
         const syncedFixtures = await syncLiveFixtures(sportCode, resolvedTeams, true);
         if (!cancelled && syncedFixtures && syncedFixtures.length > 0 && resolvedFixtures.length === 0) {
           const refinedCompRnd = findActiveCompRound(
@@ -1774,10 +1778,10 @@ export default function App() {
         className="hidden md:block fixed top-0 left-0 w-4 h-full z-40 cursor-pointer"
       />
 
-      {/* Tap-outside Backdrop on Mobile */}
-      {sidebarPinned && (
+      {/* Tap-outside Backdrop on Mobile (clears both pinned and touch-hover states) */}
+      {isSidebarOpen && (
         <div
-          onClick={() => setSidebarPinned(false)}
+          onClick={closeMobileSidebar}
           className="md:hidden fixed inset-0 bg-black/75 backdrop-blur-xs z-40"
         />
       )}
@@ -1826,8 +1830,9 @@ export default function App() {
                     <Pin className="w-3.5 h-3.5" />
                   </button>
                   <button
-                    onClick={() => setSidebarPinned(false)}
-                    className="md:hidden p-1.5 rounded-lg border border-slate-700 text-slate-400 hover:text-white"
+                    type="button"
+                    onClick={closeMobileSidebar}
+                    className="md:hidden p-2 rounded-lg border border-slate-700 text-slate-300 hover:text-white active:bg-slate-800"
                     aria-label="Close Menu"
                   >
                     <X className="w-4 h-4" />
@@ -1848,7 +1853,7 @@ export default function App() {
 
               <button
                 onClick={() => {
-                  setSidebarPinned(false);
+                  closeMobileSidebar();
                   setActiveModal('howto');
                 }}
                 className={`w-full flex items-center gap-2.5 p-2.5 rounded-lg text-xs font-bold transition text-left ${
@@ -1865,7 +1870,7 @@ export default function App() {
               <button
                 onClick={() => {
                   setFormError('');
-                  setSidebarPinned(false);
+                  closeMobileSidebar();
                   setActiveModal('create');
                 }}
                 className={`w-full flex items-center gap-2.5 p-2.5 rounded-lg text-xs font-bold transition text-left ${
@@ -1882,7 +1887,7 @@ export default function App() {
               <button
                 onClick={() => {
                   setFormError('');
-                  setSidebarPinned(false);
+                  closeMobileSidebar();
                   setActiveModal('join');
                 }}
                 className={`w-full flex items-center gap-2.5 p-2.5 rounded-lg text-xs font-bold transition text-left ${
@@ -1996,7 +2001,7 @@ export default function App() {
                     setActiveEntry(null);
                     setSetupStep('league');
                     setPicks([]);
-                    setSidebarPinned(false);
+                    closeMobileSidebar();
                   }}
                   className="w-full flex items-center justify-center gap-2 py-2.5 px-3 rounded-lg bg-slate-800 hover:bg-slate-700 text-xs font-bold text-slate-300 transition"
                 >
@@ -2026,7 +2031,13 @@ export default function App() {
         <header className="w-full flex items-center justify-between gap-2 px-3 sm:px-5 py-2.5 bg-slate-900/90 border-b border-slate-800/80 backdrop-blur-sm sticky top-0 z-30">
           <div className="flex items-center gap-2 min-w-0">
             <button
-              onClick={() => setSidebarPinned(!sidebarPinned)}
+              onClick={() => {
+                if (isSidebarOpen) {
+                  closeMobileSidebar();
+                } else {
+                  setSidebarPinned(true);
+                }
+              }}
               className="md:hidden p-2 bg-slate-800 active:bg-slate-700 rounded-lg text-slate-200 shrink-0"
               aria-label="Open Menu"
             >
@@ -2426,7 +2437,7 @@ export default function App() {
                       )}
                     </div>
 
-                    {/* Prev + Direct Round Dropdown + Next (Full-width row on mobile) */}
+                    {/* Prev + Direct Round Dropdown + Next */}
                     <div className="flex items-center gap-1.5 w-full sm:w-auto">
                       <button
                         type="button"
