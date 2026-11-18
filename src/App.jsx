@@ -26,6 +26,7 @@ import {
   ShieldCheck,
   Bell,
   BellOff,
+  Eye,
   EyeOff
 } from 'lucide-react';
 
