@@ -5,7 +5,6 @@ import {
   Trophy,
   CheckCircle2,
   ChevronRight,
-  ChevronDown,
   RotateCcw,
   Calendar,
   Lock,
@@ -18,8 +17,9 @@ import {
   Pin,
   AlertCircle,
   Users,
-  Eye,
-  EyeOff
+  Trash2,
+  Clock,
+  LayoutGrid
 } from 'lucide-react';
 
 const FALLBACK_TEAMS = {
@@ -87,7 +87,40 @@ const FALLBACK_TEAMS = {
 };
 
 const LAST_LEAGUE_STORAGE_KEY = 'lms_last_active_league_id';
-const STARTED_ROUNDS_STORAGE_KEY = 'lms_started_rounds_by_league';
+
+// Format any UTC Date into the user's local computer timezone (e.g., "Sun 2:00 am" in AU vs "Sat 3:00 pm" in UK)
+function formatLocalKickoff(dateObj) {
+  if (!dateObj || isNaN(dateObj.getTime())) return 'TBD';
+  return new Intl.DateTimeFormat(undefined, {
+    weekday: 'short',
+    day: 'numeric',
+    month: 'short',
+    hour: 'numeric',
+    minute: '2-digit',
+  }).format(dateObj);
+}
+
+// Compute the Round 1 baseline UTC kickoff (upcoming Saturday 15:00 UTC) so future rounds advance weekly
+function getDefaultRoundKickoffUTC(sport, roundNumber, dbSchedules) {
+  const override = dbSchedules?.[Number(roundNumber)];
+  if (override) {
+    return new Date(override);
+  }
+
+  // Anchor to upcoming Saturday 15:00 UTC (3:00 PM UK Saturday = 2:00 AM Sunday AEDT)
+  const now = new Date();
+  const base = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), 15, 0, 0));
+  const dayOfWeek = base.getUTCDay(); // 0 = Sun ... 6 = Sat
+  const daysUntilSat = (6 - dayOfWeek + 7) % 7 || 7;
+  base.setUTCDate(base.getUTCDate() + daysUntilSat + (Number(roundNumber) - 1) * 7);
+
+  // Offset NRL/AFL slightly earlier in UTC (09:00 UTC = 8:00 PM AEDT)
+  if (sport === 'NRL' || sport === 'AFL') {
+    base.setUTCHours(9, 0, 0, 0);
+  }
+
+  return base;
+}
 
 export default function App() {
   // User Authentication & Profile State
@@ -108,7 +141,10 @@ export default function App() {
   const [activeModal, setActiveModal] = useState(null); // 'create' | 'join' | null
   const [sidebarHovered, setSidebarHovered] = useState(false);
   const [sidebarPinned, setSidebarPinned] = useState(false);
-  const [tipsDrawerOpen, setTipsDrawerOpen] = useState(true);
+  const [activeTab, setActiveTab] = useState('picks'); // 'picks' | 'standings'
+
+  // Live Clock Tick (updates every 15s to auto-lock rounds the instant kickoff arrives)
+  const [nowTick, setNowTick] = useState(() => Date.now());
 
   // User's Joined Leagues
   const [myLeagues, setMyLeagues] = useState([]);
@@ -125,18 +161,12 @@ export default function App() {
   const [formLives, setFormLives] = useState(3);
   const [formError, setFormError] = useState('');
 
-  // Game & Leaderboard State
+  // Game, Schedules & Leaderboard State
   const [teams, setTeams] = useState([]);
   const [picks, setPicks] = useState([]);
   const [leagueMembers, setLeagueMembers] = useState([]);
   const [allLeaguePicks, setAllLeaguePicks] = useState([]);
-  const [startedRoundsMap, setStartedRoundsMap] = useState(() => {
-    try {
-      return JSON.parse(localStorage.getItem(STARTED_ROUNDS_STORAGE_KEY) || '{}');
-    } catch {
-      return {};
-    }
-  });
+  const [roundSchedules, setRoundSchedules] = useState({});
   const [currentRound, setCurrentRound] = useState(1);
   const [loading, setLoading] = useState(false);
   const [statusMessage, setStatusMessage] = useState('');
@@ -147,28 +177,27 @@ export default function App() {
     EPL: { name: 'English Premier League', defaultRound: 1 },
   };
 
-  // Track which rounds have kicked off for the active league
-  const activeLeagueKey = activeEntry?.compId || activeEntry?.league || 'solo';
-  const startedRoundsForActive = new Set(startedRoundsMap[activeLeagueKey] || []);
+  // Detect user's local timezone abbreviation (e.g. AEDT, GMT, PST)
+  const userTimeZone = Intl.DateTimeFormat().resolvedOptions().timeZone || 'Local Time';
 
-  const toggleRoundStarted = (roundNum) => {
-    setStartedRoundsMap((prev) => {
-      const currentList = new Set(prev[activeLeagueKey] || []);
-      if (currentList.has(roundNum)) {
-        currentList.delete(roundNum);
-      } else {
-        currentList.add(roundNum);
-      }
-      const updated = { ...prev, [activeLeagueKey]: Array.from(currentList) };
-      localStorage.setItem(STARTED_ROUNDS_STORAGE_KEY, JSON.stringify(updated));
-      return updated;
-    });
+  // Keep live clock ticking so kickoff locks trigger automatically in real time
+  useEffect(() => {
+    const timer = setInterval(() => setNowTick(Date.now()), 15000);
+    return () => clearInterval(timer);
+  }, []);
+
+  // Determine whether a specific round has kicked off based on UTC schedule vs current time
+  const isRoundStarted = (roundNum) => {
+    const sportCode = activeEntry?.league || 'NRL';
+    const kickoffDate = getDefaultRoundKickoffUTC(sportCode, roundNum, roundSchedules);
+    return nowTick >= kickoffDate.getTime();
   };
 
   const openSavedLeague = (membership, playerName) => {
     if (!membership?.leagues) return;
     localStorage.setItem(LAST_LEAGUE_STORAGE_KEY, membership.league_id);
     setStatusMessage('');
+    setActiveTab('picks');
     setActiveEntry({
       league: membership.leagues.sport || 'NRL',
       totalLives: membership.leagues.starting_lives || 1,
@@ -359,17 +388,39 @@ export default function App() {
     setAuthSuccess('');
   };
 
-  const getOpponentInfo = (teamIndex, totalTeams, round) => {
-    if (totalTeams < 2) return { opponentIndex: null, isHome: true };
+  // Compute deterministic opponent & individual game kickoff time in UTC for each match slot
+  const getMatchDetails = (teamIndex, totalTeams, round) => {
+    const sportCode = activeEntry?.league || 'NRL';
+    const roundStartUTC = getDefaultRoundKickoffUTC(sportCode, round, roundSchedules);
+
+    if (totalTeams < 2) {
+      return { opponentIndex: null, isHome: true, kickoffUTC: roundStartUTC };
+    }
+
     const opponentIndex =
       (teamIndex + round) % totalTeams === teamIndex
         ? (teamIndex + 1) % totalTeams
         : (teamIndex + round) % totalTeams;
     const isHome = (teamIndex + round) % 2 === 0;
-    return { opponentIndex, isHome };
+
+    // Pair both teams in the same matchup to share the exact same kickoff time slot
+    const matchSlot = Math.min(teamIndex, opponentIndex) % 4;
+    const kickoffUTC = new Date(roundStartUTC.getTime());
+
+    if (sportCode === 'EPL') {
+      // Slot 0: Sat 15:00 UTC (Sun 2:00 AM AEDT), Slot 1: Sat 17:30 UTC, Slot 2: Sun 14:00 UTC, Slot 3: Sun 16:30 UTC
+      const offsetsHours = [0, 2.5, 23, 25.5];
+      kickoffUTC.setTime(roundStartUTC.getTime() + offsetsHours[matchSlot] * 3600 * 1000);
+    } else {
+      // NRL/AFL: Fri night, Sat afternoon, Sat night, Sun afternoon
+      const offsetsHours = [-24, -4, 0, 20];
+      kickoffUTC.setTime(roundStartUTC.getTime() + offsetsHours[matchSlot] * 3600 * 1000);
+    }
+
+    return { opponentIndex, isHome, kickoffUTC };
   };
 
-  // Load Teams + League Standings & Picks when entering a league
+  // Load Teams, Round Schedules, Standings & Picks when entering a league
   useEffect(() => {
     if (!activeEntry) return;
 
@@ -377,16 +428,25 @@ export default function App() {
       setLoading(true);
       const sportCode = activeEntry.league || 'NRL';
 
-      const { data: teamsData, error: teamsError } = await supabase
-        .from('teams')
-        .select('*')
-        .eq('league', sportCode)
-        .order('name');
+      const [teamsRes, schedRes] = await Promise.all([
+        supabase.from('teams').select('*').eq('league', sportCode).order('name'),
+        supabase.from('round_schedules').select('*').eq('sport', sportCode)
+      ]);
 
-      if (!teamsError && teamsData && teamsData.length > 0) {
-        setTeams(teamsData);
+      if (!teamsRes.error && teamsRes.data && teamsRes.data.length > 0) {
+        setTeams(teamsRes.data);
       } else {
         setTeams(FALLBACK_TEAMS[sportCode] || []);
+      }
+
+      if (!schedRes.error && schedRes.data) {
+        const map = {};
+        schedRes.data.forEach((row) => {
+          map[Number(row.round_number)] = row.first_kickoff_utc;
+        });
+        setRoundSchedules(map);
+      } else {
+        setRoundSchedules({});
       }
 
       const defaultRnd = LEAGUE_CONFIG[sportCode]?.defaultRound || 1;
@@ -441,9 +501,40 @@ export default function App() {
   // Map every picked team ID -> the round number it was used in (across all past & future rounds)
   const teamRoundMap = new Map(picks.map((p) => [String(p.team_id), Number(p.round)]));
   const activeRoundPick = picks.find((p) => Number(p.round) === Number(currentRound));
-  const isCurrentRoundLocked = startedRoundsForActive.has(Number(currentRound));
+  const isCurrentRoundLocked = isRoundStarted(Number(currentRound));
 
-  // Lock in a team pick for the currently selected round (past, current, or upcoming)
+  // Clear pick for the current unplayed round so the user can reorder or leave it open
+  const handleClearPick = async () => {
+    if (!activeRoundPick) return;
+
+    if (isCurrentRoundLocked) {
+      setStatusMessage(`Round ${currentRound} has already kicked off—picks can no longer be cleared.`);
+      return;
+    }
+
+    const clearedTeamName = activeRoundPick.team_name;
+    setPicks((prev) => prev.filter((p) => Number(p.round) !== Number(currentRound)));
+
+    if (activeEntry.compId && session?.user?.id) {
+      const { error } = await supabase
+        .from('picks')
+        .delete()
+        .eq('league_id', activeEntry.compId)
+        .eq('user_id', session.user.id)
+        .eq('round_number', Number(currentRound));
+
+      if (error) {
+        setStatusMessage(`Error clearing pick: ${error.message}`);
+        return;
+      }
+
+      await refreshLeagueBoard(activeEntry.compId);
+    }
+
+    setStatusMessage(`Cleared ${clearedTeamName} from Round ${currentRound}.`);
+  };
+
+  // Lock in (or toggle off if clicked again before kickoff) a team pick
   const handleSelectTeam = async (team, fixtureText) => {
     const teamIdStr = String(team.id);
 
@@ -454,6 +545,12 @@ export default function App() {
 
     if (isCurrentRoundLocked) {
       setStatusMessage(`Round ${currentRound} has already kicked off—picks are locked.`);
+      return;
+    }
+
+    // Clicking the already-selected team for this round clears the pick cleanly
+    if (activeRoundPick && String(activeRoundPick.team_id) === teamIdStr) {
+      await handleClearPick();
       return;
     }
 
@@ -547,6 +644,7 @@ export default function App() {
     localStorage.setItem(LAST_LEAGUE_STORAGE_KEY, comp.id);
     await fetchUserProfileAndLeagues(session.user, false);
 
+    setActiveTab('picks');
     setActiveEntry({
       league: comp.sport || formSport,
       totalLives: comp.starting_lives,
@@ -599,6 +697,7 @@ export default function App() {
     localStorage.setItem(LAST_LEAGUE_STORAGE_KEY, comp.id);
     await fetchUserProfileAndLeagues(session.user, false);
 
+    setActiveTab('picks');
     setActiveEntry({
       league: comp.sport || 'NRL',
       totalLives: comp.starting_lives,
@@ -613,7 +712,6 @@ export default function App() {
     setFormInviteCode('');
   };
 
-  // Image error handler that automatically tries .svg if .png is missing
   const handleLogoError = (e) => {
     if (e.currentTarget.src.endsWith('.png')) {
       e.currentTarget.src = e.currentTarget.src.replace('.png', '.svg');
@@ -827,6 +925,9 @@ export default function App() {
   const isSidebarOpen = sidebarHovered || sidebarPinned;
   const maxRoundDisplay = Math.max(currentRound + 3, 12);
   const horizontalRounds = Array.from({ length: maxRoundDisplay }, (_, i) => i + 1);
+  const currentRoundKickoff = activeEntry
+    ? getDefaultRoundKickoffUTC(activeEntry.league || 'NRL', currentRound, roundSchedules)
+    : null;
 
   return (
     <div className="min-h-screen bg-[radial-gradient(ellipse_at_top,_var(--tw-gradient-stops))] from-blue-950 via-slate-950 to-black text-slate-100 flex relative overflow-x-hidden font-sans">
@@ -835,12 +936,12 @@ export default function App() {
         className="fixed top-0 left-0 w-4 h-full z-40 cursor-pointer"
       />
 
-      {/* Slide-out Sidebar */}
+      {/* Clean Slide-out Sidebar (Navigation & Saved Comps Only) */}
       <aside
         onMouseEnter={() => setSidebarHovered(true)}
         onMouseLeave={() => setSidebarHovered(false)}
         className={`fixed top-0 left-0 h-full bg-slate-900/95 backdrop-blur-md border-r border-slate-800 z-50 transition-all duration-300 ease-in-out flex flex-col justify-between shadow-2xl ${
-          isSidebarOpen ? 'w-96 translate-x-0' : 'w-14 -translate-x-12 md:translate-x-0 md:w-14'
+          isSidebarOpen ? 'w-72 translate-x-0' : 'w-14 -translate-x-12 md:translate-x-0 md:w-14'
         }`}
       >
         <div className="p-3.5 flex flex-col h-full justify-between overflow-y-auto">
@@ -949,195 +1050,6 @@ export default function App() {
               </div>
             )}
 
-            {/* Collapsible Dropdown: Running Order & Everyone's Tips */}
-            {activeEntry?.compId && isSidebarOpen && (
-              <div className="mt-4 border-t border-slate-800 pt-3">
-                <button
-                  type="button"
-                  onClick={() => setTipsDrawerOpen(!tipsDrawerOpen)}
-                  className="w-full flex items-center justify-between p-2 rounded-lg bg-slate-950 border border-slate-800 hover:border-slate-600 text-xs font-bold text-white transition"
-                >
-                  <div className="flex items-center gap-2">
-                    <Users className="w-4 h-4 text-blue-400" />
-                    <span>Running Order & Tips</span>
-                  </div>
-                  <ChevronDown
-                    className={`w-4 h-4 text-slate-400 transition-transform duration-200 ${
-                      tipsDrawerOpen ? 'rotate-180' : ''
-                    }`}
-                  />
-                </button>
-
-                {tipsDrawerOpen && (
-                  <div className="mt-2 bg-slate-950/90 border border-slate-800 rounded-xl p-2.5 space-y-2.5">
-                    {/* Round Kickoff Toggle inside Dropdown */}
-                    <div className="flex items-center justify-between gap-2 pb-2 border-b border-slate-800/80">
-                      <span className="text-[10px] font-bold uppercase text-slate-400">
-                        Round {currentRound} Visibility
-                      </span>
-                      <button
-                        type="button"
-                        onClick={() => toggleRoundStarted(Number(currentRound))}
-                        className={`flex items-center gap-1 px-2 py-1 rounded-md text-[10px] font-bold border transition ${
-                          isCurrentRoundLocked
-                            ? 'bg-emerald-950/70 border-emerald-600/70 text-emerald-300'
-                            : 'bg-slate-900 border-slate-700 text-slate-300 hover:border-slate-500'
-                        }`}
-                      >
-                        {isCurrentRoundLocked ? (
-                          <>
-                            <Eye className="w-3 h-3 text-emerald-400" />
-                            <span>Started (Visible)</span>
-                          </>
-                        ) : (
-                          <>
-                            <EyeOff className="w-3 h-3 text-slate-400" />
-                            <span>Pre-Kickoff (Hidden)</span>
-                          </>
-                        )}
-                      </button>
-                    </div>
-
-                    {/* Compact Horizontal Scrollable Leaderboard Table */}
-                    <div className="overflow-x-auto max-h-72">
-                      <table className="w-full text-left border-collapse text-[11px]">
-                        <thead>
-                          <tr className="border-b border-slate-800 text-[10px] font-bold uppercase text-slate-400">
-                            <th className="py-2 px-2 sticky left-0 bg-slate-950 z-10 min-w-[110px]">
-                              Player
-                            </th>
-                            <th className="py-2 px-1.5 text-center">Lives</th>
-                            {horizontalRounds.map((rNum) => {
-                              const roundStarted = startedRoundsForActive.has(rNum);
-                              return (
-                                <th
-                                  key={rNum}
-                                  onClick={() => {
-                                    setCurrentRound(rNum);
-                                    setStatusMessage('');
-                                  }}
-                                  title={`Jump to Round ${rNum}`}
-                                  className={`py-2 px-2 text-center min-w-[68px] cursor-pointer hover:text-white ${
-                                    rNum === Number(currentRound)
-                                      ? 'text-blue-400 bg-blue-950/40'
-                                      : ''
-                                  }`}
-                                >
-                                  <div className="flex items-center justify-center gap-1">
-                                    <span>R{rNum}</span>
-                                    {roundStarted && (
-                                      <span className="w-1.5 h-1.5 rounded-full bg-emerald-400" />
-                                    )}
-                                  </div>
-                                </th>
-                              );
-                            })}
-                          </tr>
-                        </thead>
-                        <tbody className="divide-y divide-slate-800/60">
-                          {leagueMembers.map((member, idx) => {
-                            const isMe = member.user_id === session.user.id;
-                            const isEliminated =
-                              member.lives <= 0 || member.status === 'eliminated';
-                            const displayName = member.profiles?.username || 'Player';
-
-                            return (
-                              <tr
-                                key={member.id}
-                                className={
-                                  isEliminated
-                                    ? 'opacity-45 bg-rose-950/10'
-                                    : isMe
-                                    ? 'bg-blue-950/20'
-                                    : ''
-                                }
-                              >
-                                <td className="py-2 px-2 sticky left-0 bg-slate-950 z-10 whitespace-nowrap font-bold">
-                                  <div className="flex items-center gap-1.5">
-                                    <span className="text-[10px] font-mono text-slate-500">
-                                      {idx + 1}.
-                                    </span>
-                                    <span className="text-slate-100 truncate max-w-[75px]">
-                                      {displayName}
-                                    </span>
-                                    {isMe && (
-                                      <span className="text-[9px] px-1 rounded bg-blue-500/20 text-blue-300">
-                                        YOU
-                                      </span>
-                                    )}
-                                  </div>
-                                </td>
-
-                                <td className="py-2 px-1.5 text-center whitespace-nowrap">
-                                  {isEliminated ? (
-                                    <span className="text-[9px] font-black text-rose-400">OUT</span>
-                                  ) : (
-                                    <span className="inline-flex items-center gap-0.5 font-bold text-rose-400">
-                                      {member.lives}
-                                      <Heart className="w-2.5 h-2.5 fill-rose-500 text-rose-500" />
-                                    </span>
-                                  )}
-                                </td>
-
-                                {horizontalRounds.map((rNum) => {
-                                  const pick = allLeaguePicks.find(
-                                    (p) =>
-                                      p.user_id === member.user_id &&
-                                      Number(p.round_number) === rNum
-                                  );
-                                  const canSeePick = isMe || startedRoundsForActive.has(rNum);
-
-                                  return (
-                                    <td
-                                      key={rNum}
-                                      className={`py-1.5 px-1.5 text-center whitespace-nowrap ${
-                                        rNum === Number(currentRound) ? 'bg-blue-950/20' : ''
-                                      }`}
-                                    >
-                                      {!pick ? (
-                                        <span className="text-slate-600">—</span>
-                                      ) : !canSeePick ? (
-                                        <span className="inline-flex items-center gap-0.5 text-[10px] text-slate-400 bg-slate-800 px-1.5 py-0.5 rounded">
-                                          <Lock className="w-2.5 h-2.5 text-amber-400" />
-                                          Tipped
-                                        </span>
-                                      ) : (
-                                        <span
-                                          className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded border text-[10px] font-bold ${
-                                            pick.status === 'win'
-                                              ? 'bg-emerald-950/70 border-emerald-500/50 text-emerald-300'
-                                              : pick.status === 'loss'
-                                              ? 'bg-rose-950/70 border-rose-500/50 text-rose-300 line-through'
-                                              : 'bg-slate-800 border-slate-700 text-white'
-                                          }`}
-                                        >
-                                          {pick.teams?.logo_url && (
-                                            <img
-                                              src={pick.teams.logo_url}
-                                              alt=""
-                                              className="w-3 h-3 object-contain"
-                                              onError={handleLogoError}
-                                            />
-                                          )}
-                                          <span>
-                                            {pick.teams?.short_code || pick.teams?.name || 'Team'}
-                                          </span>
-                                        </span>
-                                      )}
-                                    </td>
-                                  );
-                                })}
-                              </tr>
-                            );
-                          })}
-                        </tbody>
-                      </table>
-                    </div>
-                  </div>
-                )}
-              </div>
-            )}
-
             {/* Active Entry Summary */}
             {activeEntry && isSidebarOpen && (
               <div className="mt-4 space-y-2.5 border-t border-slate-800 pt-3">
@@ -1163,7 +1075,7 @@ export default function App() {
                     <div className="text-[10px] uppercase font-bold text-slate-400">
                       R{currentRound} Pick
                     </div>
-                    <div className="font-bold text-xs text-white truncate max-w-[120px] mt-0.5">
+                    <div className="font-bold text-xs text-white truncate max-w-[110px] mt-0.5">
                       {activeRoundPick ? activeRoundPick.team_name : 'None'}
                     </div>
                   </div>
@@ -1203,7 +1115,7 @@ export default function App() {
       {/* Main Container */}
       <div
         className={`flex-1 flex flex-col min-h-screen transition-all duration-300 ${
-          sidebarPinned ? 'md:ml-96' : 'md:ml-14'
+          sidebarPinned ? 'md:ml-72' : 'md:ml-14'
         }`}
       >
         {/* Top Header Bar */}
@@ -1221,21 +1133,12 @@ export default function App() {
           </div>
 
           <div className="flex items-center gap-2.5">
+            <span className="text-[11px] text-slate-400 hidden lg:inline">
+              Timezone: <strong className="text-slate-200">{userTimeZone}</strong>
+            </span>
             <span className="text-xs text-slate-400 hidden sm:inline">
               Player: <strong className="text-white">{profile?.username || session.user.email}</strong>
             </span>
-            {activeEntry?.compId && (
-              <button
-                onClick={() => {
-                  setSidebarPinned(true);
-                  setTipsDrawerOpen(true);
-                }}
-                className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-blue-950/60 hover:bg-blue-900/60 border border-blue-800/70 text-xs font-bold text-blue-200 transition"
-              >
-                <Users className="w-3.5 h-3.5 text-blue-400" />
-                <span>League Tips</span>
-              </button>
-            )}
             {activeEntry && (
               <button
                 onClick={() => {
@@ -1405,16 +1308,15 @@ export default function App() {
             </div>
           </div>
         ) : (
-          /* View 2: Compact Team Selection Dashboard */
+          /* View 2: Tabbed League Workspace ("Pick Teams" | "Standings") */
           <main className="p-4 md:p-6 max-w-7xl w-full mx-auto space-y-4">
-            {/* Compact Round Navigation Header */}
+            {/* League Header + Pick Teams / Standings Tab Switcher */}
             <div className="flex flex-col sm:flex-row sm:items-center justify-between bg-slate-900 border border-slate-800 px-4 py-3 rounded-xl gap-3">
               <div>
                 <div className="flex items-center gap-2 text-[11px] font-bold text-slate-400 uppercase tracking-wider">
-                  <Calendar className="w-3.5 h-3.5 text-blue-400" />
+                  <Trophy className="w-3.5 h-3.5 text-amber-400" />
                   <span>
-                    {activeEntry.compName ? `${activeEntry.compName} • ` : ''}
-                    {activeEntry.league} • Round {currentRound}
+                    {activeEntry.compName || `${activeEntry.league} Solo`} • {activeEntry.league}
                   </span>
                   {activeEntry.inviteCode && (
                     <span className="font-mono text-amber-400 bg-slate-950 px-1.5 py-0.5 rounded border border-slate-800">
@@ -1422,38 +1324,54 @@ export default function App() {
                     </span>
                   )}
                 </div>
-                <div className="flex items-center gap-2.5 mt-0.5">
-                  <h3 className="text-lg font-black text-white">
-                    Pick Your Club — Round {currentRound}
-                  </h3>
-                  <span className="text-xs font-semibold text-slate-400">
-                    ({picks.length}/{teams.length} assigned)
+                <div className="flex items-center gap-2 text-xs text-slate-400 mt-1">
+                  <Clock className="w-3.5 h-3.5 text-blue-400" />
+                  <span>
+                    Round {currentRound} Kickoff ({userTimeZone}):{' '}
+                    <strong className="text-slate-200">
+                      {formatLocalKickoff(currentRoundKickoff)}
+                    </strong>
                   </span>
+                  {isCurrentRoundLocked ? (
+                    <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-rose-950/70 border border-rose-700/60 text-rose-300 text-[10px] font-bold">
+                      <Lock className="w-2.5 h-2.5" /> Locked (Started)
+                    </span>
+                  ) : (
+                    <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-emerald-950/70 border border-emerald-700/60 text-emerald-300 text-[10px] font-bold">
+                      Open for Tips
+                    </span>
+                  )}
                 </div>
               </div>
 
-              <div className="flex items-center gap-1.5">
+              {/* Tab Switcher: Pick Teams vs. Standings */}
+              <div className="flex items-center gap-1.5 bg-slate-950 p-1 rounded-xl border border-slate-800 self-start sm:self-auto">
                 <button
-                  onClick={() => {
-                    setCurrentRound((r) => Math.max(1, r - 1));
-                    setStatusMessage('');
-                  }}
-                  disabled={currentRound === 1}
-                  className="px-3 py-1.5 bg-slate-800 hover:bg-slate-700 disabled:opacity-30 text-xs font-bold rounded-lg transition"
+                  type="button"
+                  onClick={() => setActiveTab('picks')}
+                  className={`flex items-center gap-1.5 px-3.5 py-1.5 rounded-lg text-xs font-bold transition ${
+                    activeTab === 'picks'
+                      ? 'bg-blue-600 text-white shadow'
+                      : 'text-slate-400 hover:text-white'
+                  }`}
                 >
-                  Prev
+                  <LayoutGrid className="w-3.5 h-3.5" />
+                  <span>Pick Teams</span>
                 </button>
-                <span className="text-xs font-mono font-bold px-2.5 py-1.5 bg-slate-950 rounded-lg border border-slate-800 text-blue-400">
-                  R{currentRound}
-                </span>
+
                 <button
-                  onClick={() => {
-                    setCurrentRound((r) => r + 1);
-                    setStatusMessage('');
-                  }}
-                  className="px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-xs font-bold rounded-lg transition"
+                  type="button"
+                  onClick={() => setActiveTab('standings')}
+                  className={`flex items-center gap-1.5 px-3.5 py-1.5 rounded-lg text-xs font-bold transition ${
+                    activeTab === 'standings'
+                      ? 'bg-blue-600 text-white shadow'
+                      : 'text-slate-400 hover:text-white'
+                  }`}
                 >
-                  Next
+                  <Users className="w-3.5 h-3.5" />
+                  <span>
+                    Standings{activeEntry.compId ? ` (${leagueMembers.length})` : ''}
+                  </span>
                 </button>
               </div>
             </div>
@@ -1465,94 +1383,351 @@ export default function App() {
               </div>
             )}
 
-            {/* Compact 5-Column Team Grid */}
-            <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 xl:grid-cols-5 gap-2.5">
-              {teams.map((team, index) => {
-                const usedInRound = teamRoundMap.get(String(team.id));
-                const isSelectedThisRound = usedInRound === Number(currentRound);
-                const isUsedInAnotherRound =
-                  usedInRound !== undefined && usedInRound !== Number(currentRound);
+            {/* TAB 1: PICK TEAMS */}
+            {activeTab === 'picks' ? (
+              <>
+                {/* Round Selector + Clear Pick Controls */}
+                <div className="flex flex-wrap items-center justify-between bg-slate-900/80 border border-slate-800 px-4 py-2.5 rounded-xl gap-3">
+                  <div className="flex items-center gap-2.5">
+                    <Calendar className="w-4 h-4 text-blue-400" />
+                    <span className="font-black text-sm text-white">
+                      Round {currentRound} Selections
+                    </span>
+                    <span className="text-xs text-slate-400">
+                      ({picks.length}/{teams.length} clubs used across season)
+                    </span>
+                  </div>
 
-                const { opponentIndex, isHome } = getOpponentInfo(index, teams.length, currentRound);
-                const opponent = opponentIndex !== null ? teams[opponentIndex] : null;
-                const fixtureText = opponent
-                  ? `${isHome ? 'vs' : '@'} ${opponent.short_code || opponent.name}`
-                  : 'Bye';
+                  <div className="flex items-center gap-2">
+                    {/* Clear Pick Button (Only shown when round hasn't started and a pick exists) */}
+                    {activeRoundPick && !isCurrentRoundLocked && (
+                      <button
+                        type="button"
+                        onClick={handleClearPick}
+                        className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-rose-950/60 hover:bg-rose-900/70 border border-rose-700/70 text-xs font-bold text-rose-200 transition"
+                        title={`Remove ${activeRoundPick.team_name} from Round ${currentRound}`}
+                      >
+                        <Trash2 className="w-3.5 h-3.5 text-rose-400" />
+                        <span>Clear Pick ({activeRoundPick.team_name})</span>
+                      </button>
+                    )}
 
-                return (
-                  <button
-                    key={team.id}
-                    disabled={
-                      isUsedInAnotherRound ||
-                      isCurrentRoundLocked ||
-                      activeEntry.remainingLives <= 0
-                    }
-                    onClick={() => handleSelectTeam(team, fixtureText)}
-                    className={`p-2.5 rounded-xl border text-left flex flex-col justify-between min-h-[96px] transition-all relative ${
-                      isSelectedThisRound
-                        ? 'bg-blue-950/90 border-blue-500 ring-1 ring-blue-500/60 shadow-md'
-                        : isUsedInAnotherRound
-                        ? 'bg-slate-900/30 border-slate-800/40 opacity-40 cursor-not-allowed'
-                        : isCurrentRoundLocked
-                        ? 'bg-slate-900/60 border-slate-800 opacity-60 cursor-not-allowed'
-                        : 'bg-slate-900 border-slate-800 hover:border-slate-600 hover:bg-slate-800/70'
-                    }`}
-                  >
-                    <div>
-                      <div className="flex items-center justify-between gap-1.5 mb-1.5">
-                        <div className="flex items-center gap-1.5">
-                          <div className="w-6 h-6 rounded-md bg-slate-800/90 p-0.5 flex items-center justify-center overflow-hidden border border-slate-700/60 shrink-0">
-                            {team.logo_url ? (
-                              <img
-                                src={team.logo_url}
-                                alt={team.name}
-                                className="w-full h-full object-contain"
-                                onError={handleLogoError}
-                              />
-                            ) : (
-                              <span className="font-mono text-[9px] font-bold text-slate-400">
+                    <div className="flex items-center gap-1.5">
+                      <button
+                        onClick={() => {
+                          setCurrentRound((r) => Math.max(1, r - 1));
+                          setStatusMessage('');
+                        }}
+                        disabled={currentRound === 1}
+                        className="px-3 py-1.5 bg-slate-800 hover:bg-slate-700 disabled:opacity-30 text-xs font-bold rounded-lg transition"
+                      >
+                        Prev
+                      </button>
+                      <span className="text-xs font-mono font-bold px-2.5 py-1.5 bg-slate-950 rounded-lg border border-slate-800 text-blue-400">
+                        R{currentRound}
+                      </span>
+                      <button
+                        onClick={() => {
+                          setCurrentRound((r) => r + 1);
+                          setStatusMessage('');
+                        }}
+                        className="px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-xs font-bold rounded-lg transition"
+                      >
+                        Next
+                      </button>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Compact 5-Column Team Grid with Local Kickoff Date/Time */}
+                <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 xl:grid-cols-5 gap-2.5">
+                  {teams.map((team, index) => {
+                    const usedInRound = teamRoundMap.get(String(team.id));
+                    const isSelectedThisRound = usedInRound === Number(currentRound);
+                    const isUsedInAnotherRound =
+                      usedInRound !== undefined && usedInRound !== Number(currentRound);
+
+                    const { opponentIndex, isHome, kickoffUTC } = getMatchDetails(
+                      index,
+                      teams.length,
+                      currentRound
+                    );
+                    const opponent = opponentIndex !== null ? teams[opponentIndex] : null;
+                    const fixtureText = opponent
+                      ? `${isHome ? 'vs' : '@'} ${opponent.short_code || opponent.name}`
+                      : 'Bye';
+                    const localGameTime = formatLocalKickoff(kickoffUTC);
+
+                    return (
+                      <button
+                        key={team.id}
+                        disabled={
+                          isUsedInAnotherRound ||
+                          isCurrentRoundLocked ||
+                          activeEntry.remainingLives <= 0
+                        }
+                        onClick={() => handleSelectTeam(team, fixtureText)}
+                        className={`p-2.5 rounded-xl border text-left flex flex-col justify-between min-h-[108px] transition-all relative ${
+                          isSelectedThisRound
+                            ? 'bg-blue-950/90 border-blue-500 ring-1 ring-blue-500/60 shadow-md'
+                            : isUsedInAnotherRound
+                            ? 'bg-slate-900/30 border-slate-800/40 opacity-40 cursor-not-allowed'
+                            : isCurrentRoundLocked
+                            ? 'bg-slate-900/60 border-slate-800 opacity-60 cursor-not-allowed'
+                            : 'bg-slate-900 border-slate-800 hover:border-slate-600 hover:bg-slate-800/70'
+                        }`}
+                      >
+                        <div>
+                          <div className="flex items-center justify-between gap-1.5 mb-1.5">
+                            <div className="flex items-center gap-1.5">
+                              <div className="w-6 h-6 rounded-md bg-slate-800/90 p-0.5 flex items-center justify-center overflow-hidden border border-slate-700/60 shrink-0">
+                                {team.logo_url ? (
+                                  <img
+                                    src={team.logo_url}
+                                    alt={team.name}
+                                    className="w-full h-full object-contain"
+                                    onError={handleLogoError}
+                                  />
+                                ) : (
+                                  <span className="font-mono text-[9px] font-bold text-slate-400">
+                                    {team.short_code}
+                                  </span>
+                                )}
+                              </div>
+                              <span className="font-mono text-[11px] font-bold text-slate-400">
                                 {team.short_code}
                               </span>
-                            )}
+                            </div>
+
+                            <div
+                              className={`flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-bold font-mono ${
+                                isSelectedThisRound
+                                  ? 'bg-blue-900/80 text-blue-200 border border-blue-700'
+                                  : 'bg-slate-800 text-slate-300 border border-slate-700'
+                              }`}
+                            >
+                              <Swords className="w-2.5 h-2.5 text-slate-400" />
+                              <span>{fixtureText}</span>
+                            </div>
                           </div>
-                          <span className="font-mono text-[11px] font-bold text-slate-400">
-                            {team.short_code}
-                          </span>
+
+                          <div className="font-bold text-xs text-white line-clamp-1">{team.name}</div>
+
+                          {/* Local Computer Date & Time */}
+                          <div className="flex items-center gap-1 text-[10px] text-slate-400 mt-1">
+                            <Clock className="w-2.5 h-2.5 text-slate-500 shrink-0" />
+                            <span className="truncate">{localGameTime}</span>
+                          </div>
                         </div>
 
-                        <div
-                          className={`flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-bold font-mono ${
-                            isSelectedThisRound
-                              ? 'bg-blue-900/80 text-blue-200 border border-blue-700'
-                              : 'bg-slate-800 text-slate-300 border border-slate-700'
-                          }`}
-                        >
-                          <Swords className="w-2.5 h-2.5 text-slate-400" />
-                          <span>{fixtureText}</span>
+                        <div className="text-[9px] font-bold uppercase tracking-wider mt-2 pt-1.5 border-t border-slate-800/60 flex items-center justify-between">
+                          {isSelectedThisRound ? (
+                            <>
+                              <span className="text-blue-400 font-black">
+                                {isCurrentRoundLocked
+                                  ? `Locked (R${currentRound})`
+                                  : 'Selected • Click to Clear'}
+                              </span>
+                              <CheckCircle2 className="w-3 h-3 text-blue-400" />
+                            </>
+                          ) : isUsedInAnotherRound ? (
+                            <span className="text-amber-500/80">Used in R{usedInRound}</span>
+                          ) : isCurrentRoundLocked ? (
+                            <span className="text-rose-400/80">Round Started</span>
+                          ) : (
+                            <span className="text-slate-500">Select R{currentRound}</span>
+                          )}
                         </div>
-                      </div>
-
-                      <div className="font-bold text-xs text-white line-clamp-1">{team.name}</div>
+                      </button>
+                    );
+                  })}
+                </div>
+              </>
+            ) : (
+              /* TAB 2: STANDINGS & LEAGUE TIPS */
+              <section className="bg-slate-900 border border-slate-800 rounded-2xl overflow-hidden shadow-2xl">
+                <div className="p-4 border-b border-slate-800 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                  <div className="flex items-center gap-2.5">
+                    <div className="p-2 bg-blue-500/10 rounded-xl text-blue-400 border border-blue-500/20">
+                      <Users className="w-4 h-4" />
                     </div>
-
-                    <div className="text-[9px] font-bold uppercase tracking-wider mt-2 pt-1.5 border-t border-slate-800/60 flex items-center justify-between">
-                      {isSelectedThisRound ? (
-                        <>
-                          <span className="text-blue-400 font-black">Locked (R{currentRound})</span>
-                          <CheckCircle2 className="w-3 h-3 text-blue-400" />
-                        </>
-                      ) : isUsedInAnotherRound ? (
-                        <span className="text-amber-500/80">Used in R{usedInRound}</span>
-                      ) : isCurrentRoundLocked ? (
-                        <span className="text-slate-500">Round Locked</span>
-                      ) : (
-                        <span className="text-slate-500">Select R{currentRound}</span>
-                      )}
+                    <div>
+                      <h2 className="font-black text-base text-white">
+                        {activeEntry.compName || `${activeEntry.league} Solo`} — Standings
+                      </h2>
+                      <p className="text-xs text-slate-400">
+                        Ranked by remaining lives • Other players' teams remain hidden until each round's first kickoff ({userTimeZone})
+                      </p>
                     </div>
-                  </button>
-                );
-              })}
-            </div>
+                  </div>
+                </div>
+
+                {!activeEntry.compId ? (
+                  <div className="p-8 text-center text-sm text-slate-400">
+                    You are in Solo Practice mode. Create or join a competition with an invite code to compare standings with friends.
+                  </div>
+                ) : (
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-left border-collapse">
+                      <thead>
+                        <tr className="bg-slate-950/90 border-b border-slate-800 text-[11px] font-bold uppercase tracking-wider text-slate-400">
+                          <th className="py-3 px-4 sticky left-0 bg-slate-950 z-10 min-w-[170px]">
+                            Player
+                          </th>
+                          <th className="py-3 px-3 text-center min-w-[85px]">Lives</th>
+                          {horizontalRounds.map((rNum) => {
+                            const started = isRoundStarted(rNum);
+                            return (
+                              <th
+                                key={rNum}
+                                onClick={() => {
+                                  setCurrentRound(rNum);
+                                  setActiveTab('picks');
+                                  setStatusMessage('');
+                                }}
+                                title={`Jump to Round ${rNum} picks`}
+                                className={`py-3 px-3 text-center min-w-[105px] cursor-pointer transition hover:text-white ${
+                                  rNum === Number(currentRound)
+                                    ? 'text-blue-400 bg-blue-950/30 border-b-2 border-blue-500'
+                                    : ''
+                                }`}
+                              >
+                                <div className="flex items-center justify-center gap-1">
+                                  <span>R{rNum}</span>
+                                  {started ? (
+                                    <span
+                                      className="w-1.5 h-1.5 rounded-full bg-emerald-400"
+                                      title="Round Started — Tips Revealed"
+                                    />
+                                  ) : (
+                                    <Lock
+                                      className="w-2.5 h-2.5 text-slate-500"
+                                      title="Hidden until kickoff"
+                                    />
+                                  )}
+                                </div>
+                              </th>
+                            );
+                          })}
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-slate-800/70 text-sm">
+                        {leagueMembers.map((member, idx) => {
+                          const isMe = member.user_id === session.user.id;
+                          const isEliminated =
+                            member.lives <= 0 || member.status === 'eliminated';
+                          const displayName = member.profiles?.username || 'Player';
+
+                          return (
+                            <tr
+                              key={member.id}
+                              className={
+                                isEliminated
+                                  ? 'opacity-45 bg-rose-950/10'
+                                  : isMe
+                                  ? 'bg-blue-950/15'
+                                  : 'hover:bg-slate-800/30'
+                              }
+                            >
+                              <td className="py-2.5 px-4 sticky left-0 bg-slate-900 z-10 whitespace-nowrap font-bold">
+                                <div className="flex items-center gap-2">
+                                  <span className="text-xs font-mono text-slate-500 w-4">
+                                    {idx + 1}.
+                                  </span>
+                                  <span className="text-white text-xs sm:text-sm">{displayName}</span>
+                                  {isMe && (
+                                    <span className="text-[10px] px-1.5 py-0.5 rounded bg-blue-500/20 text-blue-300 font-black">
+                                      YOU
+                                    </span>
+                                  )}
+                                </div>
+                              </td>
+
+                              <td className="py-2.5 px-3 text-center whitespace-nowrap">
+                                {isEliminated ? (
+                                  <span className="text-[10px] font-black uppercase px-2 py-0.5 rounded bg-rose-500/20 text-rose-400">
+                                    OUT
+                                  </span>
+                                ) : (
+                                  <div className="inline-flex items-center gap-1">
+                                    {Array.from({ length: member.lives }).map((_, i) => (
+                                      <Heart
+                                        key={i}
+                                        className="w-3.5 h-3.5 fill-rose-500 text-rose-500"
+                                      />
+                                    ))}
+                                  </div>
+                                )}
+                              </td>
+
+                              {horizontalRounds.map((rNum) => {
+                                const pick = allLeaguePicks.find(
+                                  (p) =>
+                                    p.user_id === member.user_id &&
+                                    Number(p.round_number) === rNum
+                                );
+
+                                // Only reveal other players' tips once the first game of that round has kicked off
+                                const canSeePick = isMe || isRoundStarted(rNum);
+
+                                return (
+                                  <td
+                                    key={rNum}
+                                    className={`py-2 px-3 text-center whitespace-nowrap ${
+                                      rNum === Number(currentRound) ? 'bg-blue-950/10' : ''
+                                    }`}
+                                  >
+                                    {!pick ? (
+                                      <span className="text-slate-600 text-xs">—</span>
+                                    ) : !canSeePick ? (
+                                      <span
+                                        title={`Hidden until Round ${rNum} kickoff (${formatLocalKickoff(
+                                          getDefaultRoundKickoffUTC(
+                                            activeEntry.league || 'NRL',
+                                            rNum,
+                                            roundSchedules
+                                          )
+                                        )})`}
+                                        className="inline-flex items-center gap-1 text-[11px] font-semibold text-slate-400 bg-slate-800/80 px-2 py-0.5 rounded-md border border-slate-700/60"
+                                      >
+                                        <Lock className="w-3 h-3 text-amber-400" />
+                                        Tipped
+                                      </span>
+                                    ) : (
+                                      <div
+                                        className={`inline-flex items-center gap-1.5 px-2 py-0.5 rounded-md border text-xs font-bold ${
+                                          pick.status === 'win'
+                                            ? 'bg-emerald-950/70 border-emerald-500/50 text-emerald-300'
+                                            : pick.status === 'loss'
+                                            ? 'bg-rose-950/70 border-rose-500/50 text-rose-300 line-through'
+                                            : 'bg-slate-800 border-slate-700 text-white'
+                                        }`}
+                                      >
+                                        {pick.teams?.logo_url && (
+                                          <img
+                                            src={pick.teams.logo_url}
+                                            alt=""
+                                            className="w-3.5 h-3.5 object-contain"
+                                            onError={handleLogoError}
+                                          />
+                                        )}
+                                        <span>
+                                          {pick.teams?.short_code || pick.teams?.name || 'Team'}
+                                        </span>
+                                      </div>
+                                    )}
+                                  </td>
+                                );
+                              })}
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+              </section>
+            )}
           </main>
         )}
       </div>
