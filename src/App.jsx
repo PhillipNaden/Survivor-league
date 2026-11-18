@@ -85,9 +85,12 @@ const FALLBACK_TEAMS = {
   ]
 };
 
+const LAST_LEAGUE_STORAGE_KEY = 'lms_last_active_league_id';
+
 export default function App() {
   // User Authentication & Profile State
   const [session, setSession] = useState(null);
+  const [authChecking, setAuthChecking] = useState(true);
   const [profile, setProfile] = useState(null);
   const [authMode, setAuthMode] = useState('login'); // 'login' | 'signup' | 'forgot' | 'reset'
   const [authEmail, setAuthEmail] = useState('');
@@ -135,34 +138,65 @@ export default function App() {
     EPL: { name: 'English Premier League', defaultRound: 12 },
   };
 
-  // 1. Check active login session & password recovery redirects
+  // Helper to open a saved league and remember it for the next visit
+  const openSavedLeague = (membership, playerName) => {
+    if (!membership?.leagues) return;
+    localStorage.setItem(LAST_LEAGUE_STORAGE_KEY, membership.league_id);
+    setActiveEntry({
+      league: membership.leagues.sport || 'NRL',
+      totalLives: membership.leagues.starting_lives || 1,
+      remainingLives: membership.lives,
+      compName: membership.leagues.name,
+      inviteCode: membership.leagues.invite_code,
+      compId: membership.league_id,
+      playerName: playerName || profile?.username || 'Player'
+    });
+  };
+
+  // 1. Restore session on page load & subscribe cleanly to auth events (no async DB calls inside callback)
   useEffect(() => {
+    let mounted = true;
+
     supabase.auth.getSession().then(({ data: { session } }) => {
+      if (!mounted) return;
       setSession(session);
-      if (session?.user) fetchUserProfileAndLeagues(session.user);
+      setAuthChecking(false);
     });
 
-    const { data: { subscription } } = supabase.auth.onAuthStateChange((event, session) => {
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((event, currentSession) => {
+      if (!mounted) return;
       if (event === 'PASSWORD_RECOVERY') {
         setAuthMode('reset');
         setAuthError('');
         setAuthSuccess('');
       }
-      setSession(session);
-      if (session?.user) {
-        fetchUserProfileAndLeagues(session.user);
-      } else {
+      if (event === 'SIGNED_OUT') {
+        setSession(null);
         setProfile(null);
         setMyLeagues([]);
         setActiveEntry(null);
+        setPicks([]);
+        setLeagueMembers([]);
+        setAllLeaguePicks([]);
+      } else {
+        setSession(currentSession);
       }
     });
 
-    return () => subscription.unsubscribe();
+    return () => {
+      mounted = false;
+      subscription.unsubscribe();
+    };
   }, []);
 
-  // Auto-heals missing profile row if user signed up before trigger was added
-  async function fetchUserProfileAndLeagues(user) {
+  // 2. Whenever session changes (login or page refresh), load profile & saved comps
+  useEffect(() => {
+    if (session?.user) {
+      fetchUserProfileAndLeagues(session.user, true);
+    }
+  }, [session?.user?.id]);
+
+  async function fetchUserProfileAndLeagues(user, autoRestoreLastLeague = false) {
     if (!user?.id) return;
 
     let { data: prof } = await supabase
@@ -190,10 +224,22 @@ export default function App() {
     const { data: memberships } = await supabase
       .from('league_members')
       .select('*, leagues(*)')
-      .eq('user_id', user.id);
+      .eq('user_id', user.id)
+      .order('joined_at', { ascending: false });
 
     if (memberships) {
       setMyLeagues(memberships);
+
+      // Automatically reopen the user's last active comp when they return
+      if (autoRestoreLastLeague && !activeEntry && memberships.length > 0) {
+        const savedLeagueId = localStorage.getItem(LAST_LEAGUE_STORAGE_KEY);
+        const targetMembership =
+          memberships.find((m) => m.league_id === savedLeagueId) || memberships[0];
+
+        if (targetMembership?.leagues) {
+          openSavedLeague(targetMembership, prof.username);
+        }
+      }
     }
   }
 
@@ -214,7 +260,6 @@ export default function App() {
         } else {
           setAuthSuccess('Password reset link sent! Check your email inbox (and spam folder).');
         }
-        setAuthLoading(false);
         return;
       }
 
@@ -232,14 +277,12 @@ export default function App() {
             setAuthSuccess('');
           }, 1200);
         }
-        setAuthLoading(false);
         return;
       }
 
       if (authMode === 'signup') {
         if (!authUsername.trim()) {
           setAuthError('Please enter a display name.');
-          setAuthLoading(false);
           return;
         }
         const { data, error } = await supabase.auth.signUp({
@@ -251,13 +294,11 @@ export default function App() {
         if (error) {
           setAuthError(error.message);
         } else if (data?.user && !data?.session) {
-          // Email confirmation is turned ON in Supabase
           setAuthSuccess(
             'Account created! Please check your email inbox and click the confirmation link to log in.'
           );
         } else if (data?.session) {
           setSession(data.session);
-          await fetchUserProfileAndLeagues(data.session.user);
         }
       } else {
         const { data, error } = await supabase.auth.signInWithPassword({
@@ -269,7 +310,6 @@ export default function App() {
           setAuthError(error.message);
         } else if (data?.session) {
           setSession(data.session);
-          await fetchUserProfileAndLeagues(data.session.user);
         }
       }
     } catch (err) {
@@ -280,8 +320,17 @@ export default function App() {
   };
 
   const handleSignOut = async () => {
+    localStorage.removeItem(LAST_LEAGUE_STORAGE_KEY);
     await supabase.auth.signOut();
     setActiveEntry(null);
+    setSession(null);
+    setProfile(null);
+    setMyLeagues([]);
+    setPicks([]);
+    setAuthEmail('');
+    setAuthPassword('');
+    setAuthError('');
+    setAuthSuccess('');
   };
 
   const getOpponentInfo = (teamIndex, totalTeams, round) => {
@@ -325,7 +374,7 @@ export default function App() {
     }
 
     loadTournamentData();
-  }, [activeEntry]);
+  }, [activeEntry?.compId, activeEntry?.league]);
 
   async function refreshLeagueBoard(leagueId) {
     const [membersRes, picksRes] = await Promise.all([
@@ -457,7 +506,8 @@ export default function App() {
       return;
     }
 
-    await fetchUserProfileAndLeagues(session.user);
+    localStorage.setItem(LAST_LEAGUE_STORAGE_KEY, comp.id);
+    await fetchUserProfileAndLeagues(session.user, false);
 
     setActiveEntry({
       league: comp.sport || formSport,
@@ -508,7 +558,8 @@ export default function App() {
       return;
     }
 
-    await fetchUserProfileAndLeagues(session.user);
+    localStorage.setItem(LAST_LEAGUE_STORAGE_KEY, comp.id);
+    await fetchUserProfileAndLeagues(session.user, false);
 
     setActiveEntry({
       league: comp.sport || 'NRL',
@@ -523,6 +574,29 @@ export default function App() {
     setActiveModal(null);
     setFormInviteCode('');
   };
+
+  // Image error handler that automatically tries .svg if .png is missing
+  const handleLogoError = (e) => {
+    if (e.currentTarget.src.endsWith('.png')) {
+      e.currentTarget.src = e.currentTarget.src.replace('.png', '.svg');
+    } else {
+      e.currentTarget.style.display = 'none';
+    }
+  };
+
+  // =========================================================================
+  // INITIAL SESSION CHECK SPINNER (Prevents Login Screen Flash on Refresh)
+  // =========================================================================
+  if (authChecking) {
+    return (
+      <div className="min-h-screen bg-slate-950 text-slate-300 flex items-center justify-center font-sans">
+        <div className="flex items-center gap-3">
+          <Trophy className="w-6 h-6 text-amber-400 animate-pulse" />
+          <span className="text-sm font-bold tracking-wider uppercase">Loading your session...</span>
+        </div>
+      </div>
+    );
+  }
 
   // =========================================================================
   // VIEW 0: PLAYER LOGIN / SIGN UP / FORGOT & RESET PASSWORD GATE
@@ -811,22 +885,12 @@ export default function App() {
             {myLeagues.length > 0 && isSidebarOpen && (
               <div className="mt-6 space-y-1.5 border-t border-slate-800 pt-4">
                 <div className="text-[10px] font-bold uppercase tracking-wider text-slate-500 px-2 mb-2">
-                  My Active Comps
+                  My Saved Comps
                 </div>
                 {myLeagues.map((m) => (
                   <button
                     key={m.id}
-                    onClick={() =>
-                      setActiveEntry({
-                        league: m.leagues?.sport || 'NRL',
-                        totalLives: m.leagues?.starting_lives || 1,
-                        remainingLives: m.lives,
-                        compName: m.leagues?.name,
-                        inviteCode: m.leagues?.invite_code,
-                        compId: m.league_id,
-                        playerName: profile?.username
-                      })
-                    }
+                    onClick={() => openSavedLeague(m)}
                     className={`w-full flex items-center justify-between p-2.5 rounded-xl text-xs font-bold border transition ${
                       activeEntry?.compId === m.league_id
                         ? 'bg-blue-950/80 border-blue-500 text-white'
@@ -897,6 +961,7 @@ export default function App() {
               {activeEntry && (
                 <button
                   onClick={() => {
+                    localStorage.removeItem(LAST_LEAGUE_STORAGE_KEY);
                     setActiveEntry(null);
                     setSetupStep('league');
                     setPicks([]);
@@ -904,7 +969,7 @@ export default function App() {
                   className="w-full flex items-center justify-center gap-2 py-2 px-3 rounded-xl bg-slate-800 hover:bg-slate-700 text-xs font-bold text-slate-300 transition"
                 >
                   <RotateCcw className="w-3.5 h-3.5" />
-                  <span>Switch League</span>
+                  <span>All Leagues / Lobby</span>
                 </button>
               )}
               <button
@@ -925,16 +990,46 @@ export default function App() {
           sidebarPinned ? 'md:ml-80' : 'md:ml-16'
         }`}
       >
-        <div className="md:hidden flex items-center justify-between p-4 bg-slate-900 border-b border-slate-800">
-          <button
-            onClick={() => setSidebarPinned(!sidebarPinned)}
-            className="p-2 bg-slate-800 rounded-lg text-slate-300"
-          >
-            <Menu className="w-5 h-5" />
-          </button>
-          <span className="font-black text-sm tracking-wider">LAST MAN STANDING</span>
-          <div className="w-9" />
-        </div>
+        {/* Top Header Bar with Quick Sign Out */}
+        <header className="flex items-center justify-between px-6 py-3 bg-slate-900/80 border-b border-slate-800/80 backdrop-blur-sm">
+          <div className="flex items-center gap-3">
+            <button
+              onClick={() => setSidebarPinned(!sidebarPinned)}
+              className="md:hidden p-2 bg-slate-800 rounded-lg text-slate-300"
+            >
+              <Menu className="w-5 h-5" />
+            </button>
+            <span className="font-black text-xs sm:text-sm tracking-wider text-slate-200">
+              LAST MAN STANDING
+            </span>
+          </div>
+
+          <div className="flex items-center gap-3">
+            <span className="text-xs text-slate-400 hidden sm:inline">
+              Player: <strong className="text-white">{profile?.username || session.user.email}</strong>
+            </span>
+            {activeEntry && (
+              <button
+                onClick={() => {
+                  localStorage.removeItem(LAST_LEAGUE_STORAGE_KEY);
+                  setActiveEntry(null);
+                  setSetupStep('league');
+                  setPicks([]);
+                }}
+                className="px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-xs font-bold text-slate-200 transition"
+              >
+                My Leagues ({myLeagues.length})
+              </button>
+            )}
+            <button
+              onClick={handleSignOut}
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-rose-950/50 hover:bg-rose-900/60 border border-rose-800/60 text-xs font-bold text-rose-300 transition"
+            >
+              <LogOut className="w-3.5 h-3.5" />
+              <span>Log Out</span>
+            </button>
+          </div>
+        </header>
 
         {/* View 1: Entry / Lobby Screen */}
         {!activeEntry ? (
@@ -948,7 +1043,7 @@ export default function App() {
                   <div>
                     <h1 className="text-2xl font-black">Welcome, {profile?.username || 'Player'}</h1>
                     <p className="text-slate-400 text-sm">
-                      Open a league, create a new comp, or join with an invite code
+                      Open a saved league, create a new comp, or join with an invite code
                     </p>
                   </div>
                 </div>
@@ -981,23 +1076,13 @@ export default function App() {
               {myLeagues.length > 0 && (
                 <div className="mb-6">
                   <div className="text-xs font-bold uppercase tracking-wider text-slate-400 mb-2">
-                    Your Joined Competitions
+                    Your Saved Competitions ({myLeagues.length})
                   </div>
                   <div className="space-y-2">
                     {myLeagues.map((m) => (
                       <button
                         key={m.id}
-                        onClick={() =>
-                          setActiveEntry({
-                            league: m.leagues?.sport || 'NRL',
-                            totalLives: m.leagues?.starting_lives || 1,
-                            remainingLives: m.lives,
-                            compName: m.leagues?.name,
-                            inviteCode: m.leagues?.invite_code,
-                            compId: m.league_id,
-                            playerName: profile?.username
-                          })
-                        }
+                        onClick={() => openSavedLeague(m)}
                         className="w-full flex items-center justify-between p-4 rounded-xl bg-slate-950 border border-slate-800 hover:border-blue-500 transition text-left"
                       >
                         <div>
@@ -1249,6 +1334,7 @@ export default function App() {
                                           src={pick.teams.logo_url}
                                           alt=""
                                           className="w-4 h-4 object-contain"
+                                          onError={handleLogoError}
                                         />
                                       )}
                                       <span>
@@ -1342,9 +1428,7 @@ export default function App() {
                                 src={team.logo_url}
                                 alt={team.name}
                                 className="w-full h-full object-contain"
-                                onError={(e) => {
-                                  e.currentTarget.style.display = 'none';
-                                }}
+                                onError={handleLogoError}
                               />
                             ) : (
                               <span className="font-mono text-[10px] font-bold text-slate-400">
