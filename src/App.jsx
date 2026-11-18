@@ -1699,4 +1699,20 @@ export default function App() {
                   placeholder="e.g. A8F3K2"
                   value={formInviteCode}
                   onChange={(e) => setFormInviteCode(e.target.value)}
-                  className="w-full bg-slate-9
+                  className="w-full bg-slate-950 border border-slate-800 rounded-xl p-3 text-sm font-mono uppercase text-white placeholder-slate-600 focus:outline-none focus:border-emerald-500"
+                />
+              </div>
+
+              <button
+                type="submit"
+                className="w-full py-3 bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-sm rounded-xl transition shadow-lg mt-2"
+              >
+                Join League
+              </button>
+            </form>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
