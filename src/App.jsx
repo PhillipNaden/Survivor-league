@@ -30,7 +30,6 @@ import {
   EyeOff
 } from 'lucide-react';
 
-// Safe storage helpers (prevents blank-screen crashes in Safari Private Mode / in-app browsers)
 function safeGetStorage(key) {
   try {
     return window.localStorage.getItem(key);
@@ -43,7 +42,7 @@ function safeSetStorage(key, value) {
   try {
     window.localStorage.setItem(key, value);
   } catch {
-    // Ignore storage quota / private mode restrictions
+    // Ignore storage restrictions
   }
 }
 
@@ -138,7 +137,7 @@ function getActiveSeasonInfo(sportCode) {
     return {
       label: `${startYear}-${endShort}`,
       sportsDbSeason: `${startYear}-${startYear + 1}`,
-      openFootballSlug: `${startYear}-${endShort}`,
+      footballDataSeason: String(startYear),
     };
   }
 
@@ -312,16 +311,17 @@ function getDefaultRoundKickoffUTC(sport, compRoundNumber, actualLeagueRound, db
   return base;
 }
 
+// Strict real-fixtures builder: ONLY renders verified fixtures from the database.
+// Never invents fake matchups when a future round's draw hasn't been released yet.
 function buildRoundMatchups(
   teamsList,
   sportCode,
   compRoundNumber,
   actualLeagueRound,
-  dbFixtures,
-  dbSchedules
+  dbFixtures
 ) {
   if (!teamsList || teamsList.length < 2) {
-    return { matches: [], byeTeam: null };
+    return { matches: [], byeTeam: null, isReleased: false };
   }
 
   const byShortCode = new Map(teamsList.map((t) => [t.short_code, t]));
@@ -329,99 +329,37 @@ function buildRoundMatchups(
     (f) => Number(f.round_number) === Number(actualLeagueRound)
   );
 
-  if (roundDbFixtures.length > 0) {
-    const usedIds = new Set();
-    const matches = [];
-
-    roundDbFixtures.forEach((f, idx) => {
-      const home = byShortCode.get(f.home_short_code);
-      const away = byShortCode.get(f.away_short_code);
-      if (home && away) {
-        usedIds.add(String(home.id));
-        usedIds.add(String(away.id));
-        matches.push({
-          id: f.id || `db-match-${actualLeagueRound}-${idx}`,
-          home,
-          away,
-          kickoffUTC: new Date(f.kickoff_utc),
-        });
-      }
-    });
-
-    const byeTeam = teamsList.find((t) => !usedIds.has(String(t.id))) || null;
-    matches.sort((a, b) => a.kickoffUTC - b.kickoffUTC);
-    return { matches, byeTeam };
+  if (roundDbFixtures.length === 0) {
+    return { matches: [], byeTeam: null, isReleased: false };
   }
 
-  const pool = [...teamsList];
-  const hasBye = pool.length % 2 === 1;
-  if (hasBye) {
-    pool.push(null);
-  }
-
-  const n = pool.length;
-  const r = (Number(actualLeagueRound) - 1) % (n - 1);
-
-  const rotated = [pool[0]];
-  for (let i = 1; i < n; i++) {
-    const idx = 1 + ((i - 1 + r) % (n - 1));
-    rotated.push(pool[idx]);
-  }
-
-  const roundStartUTC = getDefaultRoundKickoffUTC(
-    sportCode,
-    compRoundNumber,
-    actualLeagueRound,
-    dbSchedules
-  );
+  const usedIds = new Set();
   const matches = [];
-  let byeTeam = null;
 
-  for (let i = 0; i < n / 2; i++) {
-    const teamA = rotated[i];
-    const teamB = rotated[n - 1 - i];
-
-    if (!teamA && teamB) {
-      byeTeam = teamB;
-      continue;
+  roundDbFixtures.forEach((f, idx) => {
+    const home = byShortCode.get(f.home_short_code);
+    const away = byShortCode.get(f.away_short_code);
+    if (home && away) {
+      usedIds.add(String(home.id));
+      usedIds.add(String(away.id));
+      matches.push({
+        id: f.id || `db-match-${actualLeagueRound}-${idx}`,
+        home,
+        away,
+        kickoffUTC: new Date(f.kickoff_utc),
+      });
     }
-    if (!teamB && teamA) {
-      byeTeam = teamA;
-      continue;
-    }
+  });
 
-    const flipHome = (Number(actualLeagueRound) + i) % 2 === 1;
-    const home = flipHome ? teamB : teamA;
-    const away = flipHome ? teamA : teamB;
-
-    const kickoffUTC = new Date(roundStartUTC.getTime());
-    if (sportCode === 'EPL') {
-      const eplOffsets = [-2.5, 0, 0, 0, 0, 0, 2.5, 23, 23, 25.5];
-      kickoffUTC.setTime(
-        roundStartUTC.getTime() + eplOffsets[i % eplOffsets.length] * 3600 * 1000
-      );
-    } else if (sportCode === 'NRL') {
-      const nrlOffsets = [-47, -26, -24, -4, -1.5, 0.5, 19, 21];
-      kickoffUTC.setTime(
-        roundStartUTC.getTime() + nrlOffsets[i % nrlOffsets.length] * 3600 * 1000
-      );
-    } else {
-      const aflOffsets = [-47.5, -24.5, -5.5, -2.5, 0.5, 0.5, 18, 20.5, 22];
-      kickoffUTC.setTime(
-        roundStartUTC.getTime() + aflOffsets[i % aflOffsets.length] * 3600 * 1000
-      );
-    }
-
-    matches.push({
-      id: `rr-${sportCode}-r${actualLeagueRound}-${home.short_code}-${away.short_code}`,
-      home,
-      away,
-      kickoffUTC,
-    });
-  }
+  // Only show a Bye club for odd-team leagues (like 17-team NRL) when a full round of games is loaded
+  const expectedMatchCount = Math.floor(teamsList.length / 2);
+  const byeTeam =
+    teamsList.length % 2 === 1 && matches.length >= expectedMatchCount
+      ? teamsList.find((t) => !usedIds.has(String(t.id))) || null
+      : null;
 
   matches.sort((a, b) => a.kickoffUTC - b.kickoffUTC);
-  return { matches, byeTeam };
+  return { matches, byeTeam, isReleased: matches.length > 0 };
 }
 
 function findActiveCompRound(
@@ -442,8 +380,7 @@ function findActiveCompRound(
       sportCode,
       compRnd,
       actualRnd,
-      fixturesList,
-      schedulesMap
+      fixturesList
     );
 
     if (matches.length > 0) {
@@ -563,13 +500,16 @@ export default function App() {
 
   const actualCurrentLeagueRound = getActualLeagueRound(currentRound);
 
-  const { matches: roundMatches, byeTeam: roundByeTeam } = buildRoundMatchups(
+  const {
+    matches: roundMatches,
+    byeTeam: roundByeTeam,
+    isReleased: areRoundFixturesReleased
+  } = buildRoundMatchups(
     teams,
     activeEntry?.league || 'NRL',
     currentRound,
     actualCurrentLeagueRound,
-    dbFixtures,
-    roundSchedules
+    dbFixtures
   );
 
   const getRoundFirstKickoff = (compRoundNum) => {
@@ -580,8 +520,7 @@ export default function App() {
       sportCode,
       compRoundNum,
       actualRound,
-      dbFixtures,
-      roundSchedules
+      dbFixtures
     );
     if (matches.length > 0) {
       return matches[0].kickoffUTC;
@@ -590,8 +529,18 @@ export default function App() {
   };
 
   const isRoundStarted = (compRoundNum) => {
-    const firstKickoff = getRoundFirstKickoff(compRoundNum);
-    return nowTick >= firstKickoff.getTime();
+    const sportCode = activeEntry?.league || 'NRL';
+    const actualRound = getActualLeagueRound(compRoundNum);
+    const { matches } = buildRoundMatchups(
+      teams,
+      sportCode,
+      compRoundNum,
+      actualRound,
+      dbFixtures
+    );
+    // Unreleased future rounds cannot be marked as started
+    if (matches.length === 0) return false;
+    return nowTick >= matches[0].kickoffUTC.getTime();
   };
 
   const handleToggleEmailReminders = async () => {
@@ -610,7 +559,7 @@ export default function App() {
   };
 
   // =========================================================================
-  // AUTOMATIC MISSED-PICK ENFORCEMENT
+  // AUTOMATIC MISSED-PICK ENFORCEMENT (Only runs on rounds with real fixtures)
   // =========================================================================
   useEffect(() => {
     if (
@@ -650,17 +599,24 @@ export default function App() {
             if (pickedRounds.has(compRnd)) continue;
 
             const actualRnd = getActualLeagueRound(compRnd);
-            const { byeTeam } = buildRoundMatchups(
+            const { matches, byeTeam } = buildRoundMatchups(
               teams,
               activeEntry.league || 'NRL',
               compRnd,
               actualRnd,
-              dbFixtures,
-              roundSchedules
+              dbFixtures
             );
+
+            // Only pick from teams actually playing in this round's official fixtures
+            const playingTeamIds = new Set();
+            matches.forEach((m) => {
+              playingTeamIds.add(String(m.home.id));
+              playingTeamIds.add(String(m.away.id));
+            });
 
             const availableTeams = teams.filter(
               (t) =>
+                playingTeamIds.has(String(t.id)) &&
                 !usedTeamIds.has(String(t.id)) &&
                 (!byeTeam || String(t.id) !== String(byeTeam.id))
             );
@@ -737,6 +693,7 @@ export default function App() {
     teams.length,
     leagueMembers.length,
     allLeaguePicks.length,
+    dbFixtures.length,
     loading
   ]);
 
@@ -827,43 +784,52 @@ export default function App() {
   };
 
   // =========================================================================
-  // AUTOMATIC LIVE FIXTURES SYNC
+  // OFFICIAL FIXTURES SYNC (football-data.org for EPL + TheSportsDB for NRL/AFL)
   // =========================================================================
   const syncLiveFixtures = async (sportOverride, teamsOverride, silent = false) => {
     const sportCode = sportOverride || activeEntry?.league || 'EPL';
     const activeTeamsList = teamsOverride || teams;
     const seasonInfo = getActiveSeasonInfo(sportCode);
+    const footballDataKey = import.meta.env.VITE_FOOTBALL_DATA_KEY;
 
     if (syncingFixtures) return null;
 
     setSyncingFixtures(true);
     if (!silent) {
       setStatusMessage(
-        `Syncing ${sportCode} ${seasonInfo.label} fixtures from live feed...`
+        `Syncing official ${sportCode} ${seasonInfo.label} fixtures...`
       );
     }
 
     try {
       const rowsMap = new Map();
 
-      if (sportCode === 'EPL' && seasonInfo.openFootballSlug) {
+      // 1. Official Premier League feed via football-data.org (requires VITE_FOOTBALL_DATA_KEY)
+      if (sportCode === 'EPL' && footballDataKey) {
         try {
-          const ofUrl = `https://raw.githubusercontent.com/openfootball/football.json/master/${seasonInfo.openFootballSlug}/en.1.json`;
-          const ofRes = await fetch(ofUrl);
-          if (ofRes.ok) {
-            const ofJson = await ofRes.json();
-            const matchesList = ofJson?.matches || [];
+          const fdUrl = `https://api.football-data.org/v4/competitions/PL/matches?season=${seasonInfo.footballDataSeason}`;
+          const fdRes = await fetch(fdUrl, {
+            headers: { 'X-Auth-Token': footballDataKey }
+          });
+          if (fdRes.ok) {
+            const fdJson = await fdRes.json();
+            const matchesList = fdJson?.matches || [];
             matchesList.forEach((m) => {
-              const roundMatch = String(m.round || '').match(/(\d+)/);
-              const roundNum = roundMatch ? Number(roundMatch[1]) : null;
-              if (!roundNum) return;
+              const roundNum = Number(m.matchday);
+              if (!roundNum || isNaN(roundNum)) return;
 
-              const homeCode = resolveTeamShortCode(m.team1, activeTeamsList);
-              const awayCode = resolveTeamShortCode(m.team2, activeTeamsList);
+              const homeCode =
+                resolveTeamShortCode(m.homeTeam?.name, activeTeamsList) ||
+                resolveTeamShortCode(m.homeTeam?.shortName, activeTeamsList) ||
+                m.homeTeam?.tla;
+              const awayCode =
+                resolveTeamShortCode(m.awayTeam?.name, activeTeamsList) ||
+                resolveTeamShortCode(m.awayTeam?.shortName, activeTeamsList) ||
+                m.awayTeam?.tla;
+
               if (!homeCode || !awayCode || homeCode === awayCode) return;
 
-              const timeStr = (m.time || '15:00').slice(0, 5);
-              const parsed = new Date(`${m.date}T${timeStr}:00Z`);
+              const parsed = new Date(m.utcDate);
               if (isNaN(parsed.getTime())) return;
 
               rowsMap.set(`${sportCode}-${roundNum}-${homeCode}`, {
@@ -876,12 +842,13 @@ export default function App() {
             });
           }
         } catch {
-          // Continue to TheSportsDB
+          // Fall through if network/CORS blocks direct browser call
         }
       }
 
+      // 2. Also query TheSportsDB for NRL, AFL, or EPL fallback
       const leagueId = SPORTSDB_LEAGUE_IDS[sportCode];
-      if (leagueId) {
+      if (leagueId && rowsMap.size === 0) {
         const tsdbUrl = `https://www.thesportsdb.com/api/v1/json/123/eventsseason.php?id=${leagueId}&s=${seasonInfo.sportsDbSeason}`;
         const res = await fetch(tsdbUrl);
         if (res.ok) {
@@ -926,7 +893,9 @@ export default function App() {
       if (upsertRows.length === 0) {
         if (!silent) {
           setStatusMessage(
-            `No official ${sportCode} ${seasonInfo.label} draw published yet—using symmetrical round-robin schedule until draw release.`
+            sportCode === 'EPL' && !footballDataKey
+              ? 'Showing verified database fixtures. Add VITE_FOOTBALL_DATA_KEY in Vercel to enable live API auto-sync.'
+              : `No new official ${sportCode} ${seasonInfo.label} fixtures published yet.`
           );
         }
         return null;
@@ -954,7 +923,7 @@ export default function App() {
 
       if (!silent) {
         setStatusMessage(
-          `Synced ${upsertRows.length} live ${sportCode} (${seasonInfo.label}) fixtures!`
+          `Synced ${upsertRows.length} official ${sportCode} (${seasonInfo.label}) fixtures!`
         );
       }
 
@@ -1771,9 +1740,10 @@ export default function App() {
   const horizontalRounds = Array.from({ length: maxRoundDisplay }, (_, i) => i + 1);
   const currentRoundKickoff = activeEntry ? getRoundFirstKickoff(currentRound) : null;
 
-  const msUntilCurrentKickoff = currentRoundKickoff
-    ? currentRoundKickoff.getTime() - nowTick
-    : null;
+  const msUntilCurrentKickoff =
+    areRoundFixturesReleased && currentRoundKickoff
+      ? currentRoundKickoff.getTime() - nowTick
+      : null;
   const isClosingWithin24Hours =
     msUntilCurrentKickoff !== null &&
     msUntilCurrentKickoff > 0 &&
@@ -1789,7 +1759,6 @@ export default function App() {
         className="hidden md:block fixed top-0 left-0 w-4 h-full z-40 cursor-pointer"
       />
 
-      {/* Tap-outside Backdrop when Mobile Drawer is Open */}
       {sidebarPinned && (
         <div
           onClick={() => setSidebarPinned(false)}
@@ -1797,9 +1766,7 @@ export default function App() {
         />
       )}
 
-      {/* =====================================================================
-          LEFT-HAND NAVIGATION SIDEBAR (Mobile-Clean Slide-Out + Desktop Rail)
-      ===================================================================== */}
+      {/* LEFT-HAND NAVIGATION SIDEBAR */}
       <aside
         onMouseEnter={() => setSidebarHovered(true)}
         onMouseLeave={() => setSidebarHovered(false)}
@@ -2305,10 +2272,16 @@ export default function App() {
                   <span>
                     Round {currentRound} ({getRoundBracketLabel(currentRound)}) Kickoff ({userTimeZone}):{' '}
                     <strong className="text-slate-200">
-                      {formatLocalKickoff(currentRoundKickoff)}
+                      {areRoundFixturesReleased
+                        ? formatLocalKickoff(currentRoundKickoff)
+                        : 'Not released yet'}
                     </strong>
                   </span>
-                  {isCurrentRoundLocked ? (
+                  {!areRoundFixturesReleased ? (
+                    <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-slate-800 border border-slate-700 text-slate-300 text-[10px] font-bold">
+                      Awaiting Draw
+                    </span>
+                  ) : isCurrentRoundLocked ? (
                     <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-rose-950/70 border border-rose-700/60 text-rose-300 text-[10px] font-bold">
                       <Lock className="w-2.5 h-2.5" /> Locked (Started)
                     </span>
@@ -2383,8 +2356,8 @@ export default function App() {
                   <div className="flex items-center gap-2">
                     <Calendar className="w-4 h-4 text-blue-400 shrink-0" />
                     <span className="font-black text-xs sm:text-sm text-white">
-  Round {currentRound} ({getRoundBracketLabel(currentRound)})
-</span>
+                      Round {currentRound} ({getRoundBracketLabel(currentRound)})
+                    </span>
                     <span className="text-xs text-slate-400 hidden sm:inline">
                       • {picks.length}/{teams.length} clubs used
                     </span>
@@ -2469,182 +2442,202 @@ export default function App() {
                   </div>
                 </div>
 
-                {/* Head-to-Head Matchup Cards */}
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                  {roundMatches.map((match) => {
-                    const { home, away, kickoffUTC } = match;
-                    const localGameTime = formatLocalKickoff(kickoffUTC);
+                {/* Head-to-Head Matchup Cards OR "Not Released Yet" Notice */}
+                {!areRoundFixturesReleased ? (
+                  <div className="bg-slate-900/80 border border-slate-800 rounded-2xl p-8 text-center space-y-2.5">
+                    <div className="w-10 h-10 rounded-xl bg-slate-800 text-slate-400 flex items-center justify-center mx-auto">
+                      <Calendar className="w-5 h-5" />
+                    </div>
+                    <h3 className="font-black text-base text-white">
+                      Fixtures Not Released Yet for Round {currentRound} (
+                      {getRoundBracketLabel(currentRound)})
+                    </h3>
+                    <p className="text-xs text-slate-400 max-w-md mx-auto leading-relaxed">
+                      Official matchups and broadcast kickoff times for{' '}
+                      <strong className="text-slate-200">
+                        {getRoundBracketLabel(currentRound)}
+                      </strong>{' '}
+                      haven&apos;t been published yet. Once released, click{' '}
+                      <strong className="text-blue-300">Sync</strong> to load the real schedule.
+                    </p>
+                  </div>
+                ) : (
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                    {roundMatches.map((match) => {
+                      const { home, away, kickoffUTC } = match;
+                      const localGameTime = formatLocalKickoff(kickoffUTC);
 
-                    const homeUsedRound = teamRoundMap.get(String(home.id));
-                    const homeSelectedHere = homeUsedRound === Number(currentRound);
-                    const homeUsedElsewhere =
-                      homeUsedRound !== undefined && !homeSelectedHere;
+                      const homeUsedRound = teamRoundMap.get(String(home.id));
+                      const homeSelectedHere = homeUsedRound === Number(currentRound);
+                      const homeUsedElsewhere =
+                        homeUsedRound !== undefined && !homeSelectedHere;
 
-                    const awayUsedRound = teamRoundMap.get(String(away.id));
-                    const awaySelectedHere = awayUsedRound === Number(currentRound);
-                    const awayUsedElsewhere =
-                      awayUsedRound !== undefined && !awaySelectedHere;
+                      const awayUsedRound = teamRoundMap.get(String(away.id));
+                      const awaySelectedHere = awayUsedRound === Number(currentRound);
+                      const awayUsedElsewhere =
+                        awayUsedRound !== undefined && !awaySelectedHere;
 
-                    const gameStarted = nowTick >= kickoffUTC.getTime();
-                    const roundLocked = isCurrentRoundLocked || gameStarted;
+                      const gameStarted = nowTick >= kickoffUTC.getTime();
+                      const roundLocked = isCurrentRoundLocked || gameStarted;
 
-                    return (
-                      <div
-                        key={match.id}
-                        className={`bg-slate-900 border rounded-xl overflow-hidden transition ${
-                          homeSelectedHere || awaySelectedHere
-                            ? 'border-blue-500/80 ring-1 ring-blue-500/40 shadow-lg'
-                            : 'border-slate-800'
-                        }`}
-                      >
-                        <div className="grid grid-cols-[1fr_auto_1fr] items-stretch">
-                          {/* HOME TEAM BUTTON (LEFT) */}
-                          <button
-                            type="button"
-                            disabled={
-                              pickBusy ||
-                              homeUsedElsewhere ||
-                              roundLocked ||
-                              activeEntry.remainingLives <= 0
-                            }
-                            onClick={() =>
-                              handleSelectTeam(home, `vs ${away.short_code} (Home)`)
-                            }
-                            className={`p-2.5 sm:p-3 flex items-center gap-2 text-left transition ${
-                              homeSelectedHere
-                                ? 'bg-blue-950/90 text-white'
-                                : homeUsedElsewhere
-                                ? 'bg-slate-950/40 opacity-40 cursor-not-allowed'
-                                : roundLocked
-                                ? 'opacity-65 cursor-not-allowed'
-                                : 'hover:bg-slate-800/80'
-                            }`}
-                          >
-                            <div className="w-7 h-7 sm:w-8 sm:h-8 rounded-lg bg-slate-800/90 p-1 flex items-center justify-center overflow-hidden border border-slate-700/60 shrink-0">
-                              {home.logo_url ? (
-                                <img
-                                  src={home.logo_url}
-                                  alt={home.name}
-                                  className="w-full h-full object-contain"
-                                  onError={handleLogoError}
-                                />
-                              ) : (
-                                <span className="font-mono text-[10px] font-bold text-slate-400">
-                                  {home.short_code}
-                                </span>
-                              )}
-                            </div>
-
-                            <div className="min-w-0 flex-1">
-                              <div className="flex items-center gap-1">
-                                <span className="text-[9px] font-bold uppercase tracking-wider text-slate-500">
-                                  Home
-                                </span>
-                                {homeSelectedHere && (
-                                  <CheckCircle2 className="w-3.5 h-3.5 text-blue-400 shrink-0" />
-                                )}
-                              </div>
-                              <div className="font-bold text-xs sm:text-sm text-white truncate">
-                                {home.name}
-                              </div>
-                              <div className="text-[10px] font-semibold mt-0.5 truncate">
-                                {homeSelectedHere ? (
-                                  <span className="text-blue-400">
-                                    {roundLocked ? 'Locked In' : 'Selected'}
-                                  </span>
-                                ) : homeUsedElsewhere ? (
-                                  <span className="text-amber-500/80">
-                                    Used R{homeUsedRound}
-                                  </span>
+                      return (
+                        <div
+                          key={match.id}
+                          className={`bg-slate-900 border rounded-xl overflow-hidden transition ${
+                            homeSelectedHere || awaySelectedHere
+                              ? 'border-blue-500/80 ring-1 ring-blue-500/40 shadow-lg'
+                              : 'border-slate-800'
+                          }`}
+                        >
+                          <div className="grid grid-cols-[1fr_auto_1fr] items-stretch">
+                            {/* HOME TEAM BUTTON (LEFT) */}
+                            <button
+                              type="button"
+                              disabled={
+                                pickBusy ||
+                                homeUsedElsewhere ||
+                                roundLocked ||
+                                activeEntry.remainingLives <= 0
+                              }
+                              onClick={() =>
+                                handleSelectTeam(home, `vs ${away.short_code} (Home)`)
+                              }
+                              className={`p-2.5 sm:p-3 flex items-center gap-2 text-left transition ${
+                                homeSelectedHere
+                                  ? 'bg-blue-950/90 text-white'
+                                  : homeUsedElsewhere
+                                  ? 'bg-slate-950/40 opacity-40 cursor-not-allowed'
+                                  : roundLocked
+                                  ? 'opacity-65 cursor-not-allowed'
+                                  : 'hover:bg-slate-800/80'
+                              }`}
+                            >
+                              <div className="w-7 h-7 sm:w-8 sm:h-8 rounded-lg bg-slate-800/90 p-1 flex items-center justify-center overflow-hidden border border-slate-700/60 shrink-0">
+                                {home.logo_url ? (
+                                  <img
+                                    src={home.logo_url}
+                                    alt={home.name}
+                                    className="w-full h-full object-contain"
+                                    onError={handleLogoError}
+                                  />
                                 ) : (
-                                  <span className="text-slate-500">{home.short_code}</span>
+                                  <span className="font-mono text-[10px] font-bold text-slate-400">
+                                    {home.short_code}
+                                  </span>
                                 )}
                               </div>
-                            </div>
-                          </button>
 
-                          {/* CENTER "V" DIVIDER */}
-                          <div className="flex items-center justify-center px-2 bg-slate-950/50 border-x border-slate-800/70">
-                            <span className="text-[11px] font-black uppercase text-slate-500">
-                              v
-                            </span>
+                              <div className="min-w-0 flex-1">
+                                <div className="flex items-center gap-1">
+                                  <span className="text-[9px] font-bold uppercase tracking-wider text-slate-500">
+                                    Home
+                                  </span>
+                                  {homeSelectedHere && (
+                                    <CheckCircle2 className="w-3.5 h-3.5 text-blue-400 shrink-0" />
+                                  )}
+                                </div>
+                                <div className="font-bold text-xs sm:text-sm text-white truncate">
+                                  {home.name}
+                                </div>
+                                <div className="text-[10px] font-semibold mt-0.5 truncate">
+                                  {homeSelectedHere ? (
+                                    <span className="text-blue-400">
+                                      {roundLocked ? 'Locked In' : 'Selected'}
+                                    </span>
+                                  ) : homeUsedElsewhere ? (
+                                    <span className="text-amber-500/80">
+                                      Used R{homeUsedRound}
+                                    </span>
+                                  ) : (
+                                    <span className="text-slate-500">{home.short_code}</span>
+                                  )}
+                                </div>
+                              </div>
+                            </button>
+
+                            {/* CENTER "V" DIVIDER */}
+                            <div className="flex items-center justify-center px-2 bg-slate-950/50 border-x border-slate-800/70">
+                              <span className="text-[11px] font-black uppercase text-slate-500">
+                                v
+                              </span>
+                            </div>
+
+                            {/* AWAY TEAM BUTTON (RIGHT) */}
+                            <button
+                              type="button"
+                              disabled={
+                                pickBusy ||
+                                awayUsedElsewhere ||
+                                roundLocked ||
+                                activeEntry.remainingLives <= 0
+                              }
+                              onClick={() =>
+                                handleSelectTeam(away, `@ ${home.short_code} (Away)`)
+                              }
+                              className={`p-2.5 sm:p-3 flex items-center justify-end gap-2 text-right transition ${
+                                awaySelectedHere
+                                  ? 'bg-blue-950/90 text-white'
+                                  : awayUsedElsewhere
+                                  ? 'bg-slate-950/40 opacity-40 cursor-not-allowed'
+                                  : roundLocked
+                                  ? 'opacity-65 cursor-not-allowed'
+                                  : 'hover:bg-slate-800/80'
+                              }`}
+                            >
+                              <div className="min-w-0 flex-1">
+                                <div className="flex items-center justify-end gap-1">
+                                  {awaySelectedHere && (
+                                    <CheckCircle2 className="w-3.5 h-3.5 text-blue-400 shrink-0" />
+                                  )}
+                                  <span className="text-[9px] font-bold uppercase tracking-wider text-slate-500">
+                                    Away
+                                  </span>
+                                </div>
+                                <div className="font-bold text-xs sm:text-sm text-white truncate">
+                                  {away.name}
+                                </div>
+                                <div className="text-[10px] font-semibold mt-0.5 truncate">
+                                  {awaySelectedHere ? (
+                                    <span className="text-blue-400">
+                                      {roundLocked ? 'Locked In' : 'Selected'}
+                                    </span>
+                                  ) : awayUsedElsewhere ? (
+                                    <span className="text-amber-500/80">
+                                      Used R{awayUsedRound}
+                                    </span>
+                                  ) : (
+                                    <span className="text-slate-500">{away.short_code}</span>
+                                  )}
+                                </div>
+                              </div>
+
+                              <div className="w-7 h-7 sm:w-8 sm:h-8 rounded-lg bg-slate-800/90 p-1 flex items-center justify-center overflow-hidden border border-slate-700/60 shrink-0">
+                                {away.logo_url ? (
+                                  <img
+                                    src={away.logo_url}
+                                    alt={away.name}
+                                    className="w-full h-full object-contain"
+                                    onError={handleLogoError}
+                                  />
+                                ) : (
+                                  <span className="font-mono text-[10px] font-bold text-slate-400">
+                                    {away.short_code}
+                                  </span>
+                                )}
+                              </div>
+                            </button>
                           </div>
 
-                          {/* AWAY TEAM BUTTON (RIGHT) */}
-                          <button
-                            type="button"
-                            disabled={
-                              pickBusy ||
-                              awayUsedElsewhere ||
-                              roundLocked ||
-                              activeEntry.remainingLives <= 0
-                            }
-                            onClick={() =>
-                              handleSelectTeam(away, `@ ${home.short_code} (Away)`)
-                            }
-                            className={`p-2.5 sm:p-3 flex items-center justify-end gap-2 text-right transition ${
-                              awaySelectedHere
-                                ? 'bg-blue-950/90 text-white'
-                                : awayUsedElsewhere
-                                ? 'bg-slate-950/40 opacity-40 cursor-not-allowed'
-                                : roundLocked
-                                ? 'opacity-65 cursor-not-allowed'
-                                : 'hover:bg-slate-800/80'
-                            }`}
-                          >
-                            <div className="min-w-0 flex-1">
-                              <div className="flex items-center justify-end gap-1">
-                                {awaySelectedHere && (
-                                  <CheckCircle2 className="w-3.5 h-3.5 text-blue-400 shrink-0" />
-                                )}
-                                <span className="text-[9px] font-bold uppercase tracking-wider text-slate-500">
-                                  Away
-                                </span>
-                              </div>
-                              <div className="font-bold text-xs sm:text-sm text-white truncate">
-                                {away.name}
-                              </div>
-                              <div className="text-[10px] font-semibold mt-0.5 truncate">
-                                {awaySelectedHere ? (
-                                  <span className="text-blue-400">
-                                    {roundLocked ? 'Locked In' : 'Selected'}
-                                  </span>
-                                ) : awayUsedElsewhere ? (
-                                  <span className="text-amber-500/80">
-                                    Used R{awayUsedRound}
-                                  </span>
-                                ) : (
-                                  <span className="text-slate-500">{away.short_code}</span>
-                                )}
-                              </div>
-                            </div>
-
-                            <div className="w-7 h-7 sm:w-8 sm:h-8 rounded-lg bg-slate-800/90 p-1 flex items-center justify-center overflow-hidden border border-slate-700/60 shrink-0">
-                              {away.logo_url ? (
-                                <img
-                                  src={away.logo_url}
-                                  alt={away.name}
-                                  className="w-full h-full object-contain"
-                                  onError={handleLogoError}
-                                />
-                              ) : (
-                                <span className="font-mono text-[10px] font-bold text-slate-400">
-                                  {away.short_code}
-                                </span>
-                              )}
-                            </div>
-                          </button>
+                          {/* Bottom Footer Bar: Local Date & Time of Play */}
+                          <div className="px-3 py-1.5 bg-slate-950/80 border-t border-slate-800/80 flex items-center justify-center gap-1.5 text-[11px] text-slate-400">
+                            <Clock className="w-3 h-3 text-slate-500 shrink-0" />
+                            <span>{localGameTime}</span>
+                          </div>
                         </div>
-
-                        {/* Bottom Footer Bar: Local Date & Time of Play */}
-                        <div className="px-3 py-1.5 bg-slate-950/80 border-t border-slate-800/80 flex items-center justify-center gap-1.5 text-[11px] text-slate-400">
-                          <Clock className="w-3 h-3 text-slate-500 shrink-0" />
-                          <span>{localGameTime}</span>
-                        </div>
-                      </div>
-                    );
-                  })}
-                </div>
+                      );
+                    })}
+                  </div>
+                )}
 
                 {/* Bye Club Notice */}
                 {roundByeTeam && (
@@ -2983,9 +2976,7 @@ export default function App() {
         )}
       </div>
 
-      {/* =====================================================================
-          MODAL: HOW TO PLAY & MAKING PICKS GUIDE
-      ===================================================================== */}
+      {/* MODAL: HOW TO PLAY & MAKING PICKS GUIDE */}
       {activeModal === 'howto' && (
         <div className="fixed inset-0 bg-black/80 backdrop-blur-sm z-50 flex items-center justify-center p-4">
           <div className="bg-slate-900 border border-slate-800 rounded-2xl max-w-2xl w-full max-h-[88vh] overflow-y-auto p-5 sm:p-6 shadow-2xl relative">
@@ -3080,7 +3071,7 @@ export default function App() {
         </div>
       )}
 
-      {/* Modal: Create Competition */}
+      {/* MODAL: CREATE COMPETITION */}
       {activeModal === 'create' && (
         <div className="fixed inset-0 bg-black/80 backdrop-blur-sm z-50 flex items-center justify-center p-4">
           <div className="bg-slate-900 border border-slate-800 rounded-2xl max-w-md w-full p-6 shadow-2xl relative">
@@ -3182,7 +3173,7 @@ export default function App() {
         </div>
       )}
 
-      {/* Modal: Join Competition */}
+      {/* MODAL: JOIN COMPETITION */}
       {activeModal === 'join' && (
         <div className="fixed inset-0 bg-black/80 backdrop-blur-sm z-50 flex items-center justify-center p-4">
           <div className="bg-slate-900 border border-slate-800 rounded-2xl max-w-md w-full p-6 shadow-2xl relative">
