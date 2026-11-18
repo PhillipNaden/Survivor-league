@@ -29,6 +29,39 @@ import {
   EyeOff
 } from 'lucide-react';
 
+// Safe storage helpers (prevents blank-screen crashes in Safari Private Mode / in-app browsers)
+function safeGetStorage(key) {
+  try {
+    return window.localStorage.getItem(key);
+  } catch {
+    return null;
+  }
+}
+
+function safeSetStorage(key, value) {
+  try {
+    window.localStorage.setItem(key, value);
+  } catch {
+    // Ignore storage quota / private mode restrictions
+  }
+}
+
+function safeRemoveStorage(key) {
+  try {
+    window.localStorage.removeItem(key);
+  } catch {
+    // Ignore
+  }
+}
+
+function getSafeTimeZone() {
+  try {
+    return Intl.DateTimeFormat().resolvedOptions().timeZone || 'Local Time';
+  } catch {
+    return 'Local Time';
+  }
+}
+
 const FALLBACK_TEAMS = {
   NRL: [
     { id: 'nrl-1', name: 'Brisbane Broncos', short_code: 'BRI', league: 'NRL' },
@@ -230,25 +263,33 @@ const LAST_LEAGUE_STORAGE_KEY = 'lms_last_active_league_id';
 
 function formatLocalKickoff(dateObj) {
   if (!dateObj || isNaN(dateObj.getTime())) return 'TBD';
-  return new Intl.DateTimeFormat(undefined, {
-    weekday: 'short',
-    day: 'numeric',
-    month: 'short',
-    hour: 'numeric',
-    minute: '2-digit',
-  }).format(dateObj);
+  try {
+    return new Intl.DateTimeFormat(undefined, {
+      weekday: 'short',
+      day: 'numeric',
+      month: 'short',
+      hour: 'numeric',
+      minute: '2-digit',
+    }).format(dateObj);
+  } catch {
+    return dateObj.toUTCString().slice(0, 22);
+  }
 }
 
 function formatMessageTime(isoString) {
   if (!isoString) return '';
   const d = new Date(isoString);
   if (isNaN(d.getTime())) return '';
-  return new Intl.DateTimeFormat(undefined, {
-    day: 'numeric',
-    month: 'short',
-    hour: 'numeric',
-    minute: '2-digit',
-  }).format(d);
+  try {
+    return new Intl.DateTimeFormat(undefined, {
+      day: 'numeric',
+      month: 'short',
+      hour: 'numeric',
+      minute: '2-digit',
+    }).format(d);
+  } catch {
+    return '';
+  }
 }
 
 function getDefaultRoundKickoffUTC(sport, compRoundNumber, actualLeagueRound, dbSchedules) {
@@ -382,8 +423,6 @@ function buildRoundMatchups(
   return { matches, byeTeam };
 }
 
-// Finds the exact current Comp Round (1, 2, 3...) that is either currently in progress
-// or next up to kick off — ensuring login/join never skips ahead to future rounds.
 function findActiveCompRound(
   teamsList,
   sportCode,
@@ -409,7 +448,6 @@ function findActiveCompRound(
     if (matches.length > 0) {
       const firstKickoffMs = matches[0].kickoffUTC.getTime();
       const lastKickoffMs = matches[matches.length - 1].kickoffUTC.getTime();
-      // If this round hasn't finished yet (or hasn't kicked off yet), land right here
       if (nowMs <= lastKickoffMs + 3 * 3600 * 1000 || nowMs < firstKickoffMs) {
         return compRnd;
       }
@@ -504,7 +542,7 @@ export default function App() {
     EPL: { name: 'English Premier League', roundLabel: 'Matchweek' },
   };
 
-  const userTimeZone = Intl.DateTimeFormat().resolvedOptions().timeZone || 'Local Time';
+  const userTimeZone = getSafeTimeZone();
 
   useEffect(() => {
     const timer = setInterval(() => setNowTick(Date.now()), 15000);
@@ -555,7 +593,6 @@ export default function App() {
     return nowTick >= firstKickoff.getTime();
   };
 
-  // Toggle 24-hour reminder email preference
   const handleToggleEmailReminders = async () => {
     if (!profile?.id) return;
     const nextValue = profile.email_reminders === false ? true : false;
@@ -656,7 +693,7 @@ export default function App() {
               }
             } else {
               const penaltyKey = `lms_no_team_penalty_${activeEntry.compId}_${member.user_id}_r${compRnd}`;
-              if (!localStorage.getItem(penaltyKey)) {
+              if (!safeGetStorage(penaltyKey)) {
                 const newLives = Math.max(0, Number(member.lives) - 1);
                 const newStatus = newLives <= 0 ? 'eliminated' : 'active';
 
@@ -666,7 +703,7 @@ export default function App() {
                   .eq('id', member.id);
 
                 if (!error) {
-                  localStorage.setItem(penaltyKey, '1');
+                  safeSetStorage(penaltyKey, '1');
                   member.lives = newLives;
                   member.status = newStatus;
                   anyChangeMade = true;
@@ -934,9 +971,10 @@ export default function App() {
   const openSavedLeague = (membership, playerName) => {
     if (!membership?.leagues) return;
     const sportCode = membership.leagues.sport || 'NRL';
-    localStorage.setItem(LAST_LEAGUE_STORAGE_KEY, membership.league_id);
+    safeSetStorage(LAST_LEAGUE_STORAGE_KEY, membership.league_id);
     setStatusMessage('');
     setActiveTab('picks');
+    setSidebarPinned(false);
     setActiveEntry({
       league: sportCode,
       season: membership.leagues.season || getActiveSeasonInfo(sportCode).label,
@@ -954,11 +992,17 @@ export default function App() {
   useEffect(() => {
     let mounted = true;
 
-    supabase.auth.getSession().then(({ data: { session } }) => {
-      if (!mounted) return;
-      setSession(session);
-      setAuthChecking(false);
-    });
+    supabase.auth
+      .getSession()
+      .then(({ data: { session } }) => {
+        if (!mounted) return;
+        setSession(session);
+        setAuthChecking(false);
+      })
+      .catch(() => {
+        if (!mounted) return;
+        setAuthChecking(false);
+      });
 
     const { data: { subscription } } = supabase.auth.onAuthStateChange((event, currentSession) => {
       if (!mounted) return;
@@ -1029,7 +1073,7 @@ export default function App() {
       setMyLeagues(memberships);
 
       if (autoRestoreLastLeague && !activeEntry && memberships.length > 0) {
-        const savedLeagueId = localStorage.getItem(LAST_LEAGUE_STORAGE_KEY);
+        const savedLeagueId = safeGetStorage(LAST_LEAGUE_STORAGE_KEY);
         const targetMembership =
           memberships.find((m) => m.league_id === savedLeagueId) || memberships[0];
 
@@ -1117,7 +1161,7 @@ export default function App() {
   };
 
   const handleSignOut = async () => {
-    localStorage.removeItem(LAST_LEAGUE_STORAGE_KEY);
+    safeRemoveStorage(LAST_LEAGUE_STORAGE_KEY);
     await supabase.auth.signOut();
     setActiveEntry(null);
     setSession(null);
@@ -1164,7 +1208,6 @@ export default function App() {
       const resolvedFixtures = !fixRes.error && fixRes.data ? fixRes.data : [];
       setDbFixtures(resolvedFixtures);
 
-      // Land directly on the current active/upcoming week of the competition (never skips ahead)
       const activeCompRnd = findActiveCompRound(
         resolvedTeams,
         sportCode,
@@ -1178,7 +1221,6 @@ export default function App() {
         await refreshLeagueBoard(activeEntry.compId);
       }
 
-      // Sync latest live fixtures in background without jumping the user's active round
       const syncedFixtures = await syncLiveFixtures(sportCode, resolvedTeams, true);
       if (syncedFixtures && syncedFixtures.length > 0) {
         const refinedCompRnd = findActiveCompRound(
@@ -1238,7 +1280,6 @@ export default function App() {
   const activeRoundPick = picks.find((p) => Number(p.round) === Number(currentRound));
   const isCurrentRoundLocked = isRoundStarted(Number(currentRound));
 
-  // Clear pick permanently in Supabase + local state
   const handleClearPick = async (e) => {
     if (e) {
       e.preventDefault();
@@ -1306,7 +1347,6 @@ export default function App() {
     }
   };
 
-  // Lock in (or toggle off if clicked again before kickoff) a team pick
   const handleSelectTeam = async (team, fixtureText) => {
     if (pickBusy) return;
     const teamIdStr = String(team.id);
@@ -1384,7 +1424,6 @@ export default function App() {
     }
   };
 
-  // Create League tagged with current season AND current active league round/matchweek
   const handleCreateCompetition = async (e) => {
     e.preventDefault();
     setFormError('');
@@ -1439,7 +1478,7 @@ export default function App() {
       return;
     }
 
-    localStorage.setItem(LAST_LEAGUE_STORAGE_KEY, comp.id);
+    safeSetStorage(LAST_LEAGUE_STORAGE_KEY, comp.id);
     await fetchUserProfileAndLeagues(session.user, false);
 
     setActiveTab('picks');
@@ -1459,7 +1498,6 @@ export default function App() {
     setFormCompName('');
   };
 
-  // Join League via Invite Code
   const handleJoinCompetition = async (e) => {
     e.preventDefault();
     setFormError('');
@@ -1494,7 +1532,7 @@ export default function App() {
       return;
     }
 
-    localStorage.setItem(LAST_LEAGUE_STORAGE_KEY, comp.id);
+    safeSetStorage(LAST_LEAGUE_STORAGE_KEY, comp.id);
     await fetchUserProfileAndLeagues(session.user, false);
 
     const sportCode = comp.sport || 'NRL';
@@ -1539,8 +1577,8 @@ export default function App() {
   // =========================================================================
   if (!session || authMode === 'reset') {
     return (
-      <div className="min-h-screen bg-[radial-gradient(ellipse_at_top,_var(--tw-gradient-stops))] from-blue-950 via-slate-950 to-black text-slate-100 flex items-center justify-center p-6 font-sans">
-        <div className="max-w-md w-full bg-slate-900 border border-slate-800 rounded-2xl p-8 shadow-2xl">
+      <div className="min-h-screen bg-[radial-gradient(ellipse_at_top,_var(--tw-gradient-stops))] from-blue-950 via-slate-950 to-black text-slate-100 flex items-center justify-center p-4 sm:p-6 font-sans">
+        <div className="max-w-md w-full bg-slate-900 border border-slate-800 rounded-2xl p-6 sm:p-8 shadow-2xl">
           <div className="flex items-center gap-3 mb-6">
             <div className="p-3 bg-amber-500/10 rounded-xl text-amber-400 border border-amber-500/20">
               <Trophy className="w-6 h-6" />
@@ -1582,7 +1620,7 @@ export default function App() {
                   placeholder="e.g. Phil"
                   value={authUsername}
                   onChange={(e) => setAuthUsername(e.target.value)}
-                  className="w-full bg-slate-950 border border-slate-800 rounded-xl p-3 text-sm text-white placeholder-slate-600 focus:outline-none focus:border-blue-500"
+                  className="w-full bg-slate-950 border border-slate-800 rounded-xl p-3 text-base sm:text-sm text-white placeholder-slate-600 focus:outline-none focus:border-blue-500"
                 />
               </div>
             )}
@@ -1599,7 +1637,7 @@ export default function App() {
                   placeholder="you@example.com"
                   value={authEmail}
                   onChange={(e) => setAuthEmail(e.target.value)}
-                  className="w-full bg-slate-950 border border-slate-800 rounded-xl p-3 text-sm text-white placeholder-slate-600 focus:outline-none focus:border-blue-500"
+                  className="w-full bg-slate-950 border border-slate-800 rounded-xl p-3 text-base sm:text-sm text-white placeholder-slate-600 focus:outline-none focus:border-blue-500"
                 />
               </div>
             )}
@@ -1633,7 +1671,7 @@ export default function App() {
                     placeholder="Minimum 6 characters"
                     value={authPassword}
                     onChange={(e) => setAuthPassword(e.target.value)}
-                    className="w-full bg-slate-950 border border-slate-800 rounded-xl p-3 pr-10 text-sm text-white placeholder-slate-600 focus:outline-none focus:border-blue-500"
+                    className="w-full bg-slate-950 border border-slate-800 rounded-xl p-3 pr-10 text-base sm:text-sm text-white placeholder-slate-600 focus:outline-none focus:border-blue-500"
                   />
                   <button
                     type="button"
@@ -1660,7 +1698,7 @@ export default function App() {
                     placeholder="Enter new password (min 6 characters)"
                     value={newPassword}
                     onChange={(e) => setNewPassword(e.target.value)}
-                    className="w-full bg-slate-950 border border-slate-800 rounded-xl p-3 pr-10 text-sm text-white placeholder-slate-600 focus:outline-none focus:border-blue-500"
+                    className="w-full bg-slate-950 border border-slate-800 rounded-xl p-3 pr-10 text-base sm:text-sm text-white placeholder-slate-600 focus:outline-none focus:border-blue-500"
                   />
                   <button
                     type="button"
@@ -1732,7 +1770,6 @@ export default function App() {
   const horizontalRounds = Array.from({ length: maxRoundDisplay }, (_, i) => i + 1);
   const currentRoundKickoff = activeEntry ? getRoundFirstKickoff(currentRound) : null;
 
-  // Check if the currently viewed round closes within the next 24 hours
   const msUntilCurrentKickoff = currentRoundKickoff
     ? currentRoundKickoff.getTime() - nowTick
     : null;
@@ -1748,17 +1785,27 @@ export default function App() {
     <div className="min-h-screen bg-[radial-gradient(ellipse_at_top,_var(--tw-gradient-stops))] from-blue-950 via-slate-950 to-black text-slate-100 flex relative overflow-x-hidden font-sans">
       <div
         onMouseEnter={() => setSidebarHovered(true)}
-        className="fixed top-0 left-0 w-4 h-full z-40 cursor-pointer"
+        className="hidden md:block fixed top-0 left-0 w-4 h-full z-40 cursor-pointer"
       />
 
+      {/* Tap-outside Backdrop when Mobile Drawer is Open */}
+      {sidebarPinned && (
+        <div
+          onClick={() => setSidebarPinned(false)}
+          className="md:hidden fixed inset-0 bg-black/70 backdrop-blur-xs z-40"
+        />
+      )}
+
       {/* =====================================================================
-          LEFT-HAND NAVIGATION SIDEBAR (Includes "How to Play & Rules")
+          LEFT-HAND NAVIGATION SIDEBAR (Mobile-Clean Slide-Out + Desktop Rail)
       ===================================================================== */}
       <aside
         onMouseEnter={() => setSidebarHovered(true)}
         onMouseLeave={() => setSidebarHovered(false)}
         className={`fixed top-0 left-0 h-full bg-slate-900/95 backdrop-blur-md border-r border-slate-800 z-50 transition-all duration-300 ease-in-out flex flex-col justify-between shadow-2xl ${
-          isSidebarOpen ? 'w-72 translate-x-0' : 'w-14 -translate-x-12 md:translate-x-0 md:w-14'
+          isSidebarOpen
+            ? 'w-72 translate-x-0'
+            : 'w-72 -translate-x-full md:translate-x-0 md:w-14'
         }`}
       >
         <div className="p-3.5 flex flex-col h-full justify-between overflow-y-auto">
@@ -1780,32 +1827,44 @@ export default function App() {
               </div>
 
               {isSidebarOpen && (
-                <button
-                  onClick={() => setSidebarPinned(!sidebarPinned)}
-                  className={`p-1.5 rounded-lg border text-xs transition ${
-                    sidebarPinned
-                      ? 'bg-blue-600 border-blue-500 text-white'
-                      : 'border-slate-700 text-slate-400 hover:text-white'
-                  }`}
-                  title={sidebarPinned ? 'Unpin menu' : 'Keep menu open'}
-                >
-                  <Pin className="w-3.5 h-3.5" />
-                </button>
+                <div className="flex items-center gap-1">
+                  <button
+                    onClick={() => setSidebarPinned(!sidebarPinned)}
+                    className={`hidden md:block p-1.5 rounded-lg border text-xs transition ${
+                      sidebarPinned
+                        ? 'bg-blue-600 border-blue-500 text-white'
+                        : 'border-slate-700 text-slate-400 hover:text-white'
+                    }`}
+                    title={sidebarPinned ? 'Unpin menu' : 'Keep menu open'}
+                  >
+                    <Pin className="w-3.5 h-3.5" />
+                  </button>
+                  <button
+                    onClick={() => setSidebarPinned(false)}
+                    className="md:hidden p-1.5 rounded-lg border border-slate-700 text-slate-400 hover:text-white"
+                    aria-label="Close Menu"
+                  >
+                    <X className="w-4 h-4" />
+                  </button>
+                </div>
               )}
             </div>
 
-            {/* Menu Section: Leagues & How to Play */}
+            {/* Menu Section */}
             <div className="mt-4 space-y-1.5">
               <div
                 className={`text-[10px] font-bold uppercase tracking-wider text-slate-500 px-1.5 ${
-                  !isSidebarOpen && 'hidden'
+                  !isSidebarOpen && 'md:hidden'
                 }`}
               >
                 Menu
               </div>
 
               <button
-                onClick={() => setActiveModal('howto')}
+                onClick={() => {
+                  setSidebarPinned(false);
+                  setActiveModal('howto');
+                }}
                 className={`w-full flex items-center gap-2.5 p-2 rounded-lg text-xs font-bold transition text-left ${
                   activeModal === 'howto'
                     ? 'bg-amber-600 text-white'
@@ -1820,6 +1879,7 @@ export default function App() {
               <button
                 onClick={() => {
                   setFormError('');
+                  setSidebarPinned(false);
                   setActiveModal('create');
                 }}
                 className={`w-full flex items-center gap-2.5 p-2 rounded-lg text-xs font-bold transition text-left ${
@@ -1836,6 +1896,7 @@ export default function App() {
               <button
                 onClick={() => {
                   setFormError('');
+                  setSidebarPinned(false);
                   setActiveModal('join');
                 }}
                 className={`w-full flex items-center gap-2.5 p-2 rounded-lg text-xs font-bold transition text-left ${
@@ -1945,10 +2006,11 @@ export default function App() {
               {activeEntry && (
                 <button
                   onClick={() => {
-                    localStorage.removeItem(LAST_LEAGUE_STORAGE_KEY);
+                    safeRemoveStorage(LAST_LEAGUE_STORAGE_KEY);
                     setActiveEntry(null);
                     setSetupStep('league');
                     setPicks([]);
+                    setSidebarPinned(false);
                   }}
                   className="w-full flex items-center justify-center gap-2 py-2 px-3 rounded-lg bg-slate-800 hover:bg-slate-700 text-xs font-bold text-slate-300 transition"
                 >
@@ -1975,11 +2037,12 @@ export default function App() {
         }`}
       >
         {/* Top Header Bar */}
-        <header className="flex items-center justify-between px-5 py-2.5 bg-slate-900/80 border-b border-slate-800/80 backdrop-blur-sm">
+        <header className="flex items-center justify-between px-4 sm:px-5 py-2.5 bg-slate-900/80 border-b border-slate-800/80 backdrop-blur-sm">
           <div className="flex items-center gap-2.5">
             <button
               onClick={() => setSidebarPinned(!sidebarPinned)}
               className="md:hidden p-1.5 bg-slate-800 rounded-lg text-slate-300"
+              aria-label="Open Menu"
             >
               <Menu className="w-4 h-4" />
             </button>
@@ -1999,46 +2062,46 @@ export default function App() {
             <button
               type="button"
               onClick={() => setActiveModal('howto')}
-              className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-amber-500/10 hover:bg-amber-500/20 border border-amber-500/30 text-xs font-bold text-amber-300 transition"
+              className="flex items-center gap-1 px-2.5 py-1 rounded-lg bg-amber-500/10 hover:bg-amber-500/20 border border-amber-500/30 text-xs font-bold text-amber-300 transition"
             >
               <HelpCircle className="w-3.5 h-3.5" />
-              <span>How to Play</span>
+              <span className="hidden xs:inline sm:inline">How to Play</span>
             </button>
 
             {activeEntry && (
               <button
                 onClick={() => {
-                  localStorage.removeItem(LAST_LEAGUE_STORAGE_KEY);
+                  safeRemoveStorage(LAST_LEAGUE_STORAGE_KEY);
                   setActiveEntry(null);
                   setSetupStep('league');
                   setPicks([]);
                 }}
                 className="px-2.5 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-xs font-bold text-slate-200 transition"
               >
-                My Leagues ({myLeagues.length})
+                Leagues ({myLeagues.length})
               </button>
             )}
             <button
               onClick={handleSignOut}
-              className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-rose-950/50 hover:bg-rose-900/60 border border-rose-800/60 text-xs font-bold text-rose-300 transition"
+              className="flex items-center gap-1 px-2.5 py-1 rounded-lg bg-rose-950/50 hover:bg-rose-900/60 border border-rose-800/60 text-xs font-bold text-rose-300 transition"
             >
               <LogOut className="w-3.5 h-3.5" />
-              <span>Log Out</span>
+              <span className="hidden sm:inline">Log Out</span>
             </button>
           </div>
         </header>
 
         {/* View 1: Entry / Lobby Screen */}
         {!activeEntry ? (
-          <div className="flex-1 flex items-center justify-center p-5">
-            <div className="max-w-lg w-full bg-slate-900 border border-slate-800 rounded-2xl p-6 shadow-2xl relative">
+          <div className="flex-1 flex items-center justify-center p-4 sm:p-5">
+            <div className="max-w-lg w-full bg-slate-900 border border-slate-800 rounded-2xl p-5 sm:p-6 shadow-2xl relative">
               <div className="flex items-center justify-between gap-3 mb-5">
                 <div className="flex items-center gap-3">
                   <div className="p-2.5 bg-amber-500/10 rounded-xl text-amber-400 border border-amber-500/20">
                     <Trophy className="w-5 h-5" />
                   </div>
                   <div>
-                    <h1 className="text-xl font-black">Welcome, {profile?.username || 'Player'}</h1>
+                    <h1 className="text-lg sm:text-xl font-black">Welcome, {profile?.username || 'Player'}</h1>
                     <p className="text-slate-400 text-xs">
                       Open a saved league, create a new season comp, or join with an invite code
                     </p>
@@ -2046,7 +2109,7 @@ export default function App() {
                 </div>
               </div>
 
-              <div className="grid grid-cols-2 gap-2.5 mb-5">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5 mb-5">
                 <button
                   onClick={() => {
                     setFormError('');
@@ -2187,7 +2250,7 @@ export default function App() {
           </div>
         ) : (
           /* View 2: Tabbed League Workspace ("Pick Teams" | "Standings" | "Message Board") */
-          <main className="p-4 md:p-6 max-w-6xl w-full mx-auto space-y-4">
+          <main className="p-3 sm:p-4 md:p-6 max-w-6xl w-full mx-auto space-y-4">
             {/* 24-Hour Round Closing Reminder Banner */}
             {isClosingWithin24Hours && !isCurrentRoundLocked && (
               <div
@@ -2224,7 +2287,7 @@ export default function App() {
             {/* League Header + 3-Tab Switcher */}
             <div className="flex flex-col md:flex-row md:items-center justify-between bg-slate-900 border border-slate-800 px-4 py-3 rounded-xl gap-3">
               <div>
-                <div className="flex items-center gap-2 text-[11px] font-bold text-slate-400 uppercase tracking-wider">
+                <div className="flex flex-wrap items-center gap-2 text-[11px] font-bold text-slate-400 uppercase tracking-wider">
                   <Trophy className="w-3.5 h-3.5 text-amber-400" />
                   <span>
                     {activeEntry.compName || `${activeEntry.league} Solo`} • {activeEntry.league}{' '}
@@ -2236,7 +2299,7 @@ export default function App() {
                     </span>
                   )}
                 </div>
-                <div className="flex items-center gap-2 text-xs text-slate-400 mt-1">
+                <div className="flex flex-wrap items-center gap-2 text-xs text-slate-400 mt-1">
                   <Clock className="w-3.5 h-3.5 text-blue-400" />
                   <span>
                     Round {currentRound} ({getRoundBracketLabel(currentRound)}) Kickoff ({userTimeZone}):{' '}
@@ -2315,14 +2378,14 @@ export default function App() {
             =============================================================== */}
             {activeTab === 'picks' && (
               <>
-                <div className="flex flex-wrap items-center justify-between bg-slate-900/80 border border-slate-800 px-4 py-2.5 rounded-xl gap-3">
-                  <div className="flex items-center gap-2.5">
-                    <Calendar className="w-4 h-4 text-blue-400" />
-                    <span className="font-black text-sm text-white">
+                <div className="flex flex-wrap items-center justify-between bg-slate-900/80 border border-slate-800 px-3.5 sm:px-4 py-2.5 rounded-xl gap-3">
+                  <div className="flex items-center gap-2">
+                    <Calendar className="w-4 h-4 text-blue-400 shrink-0" />
+                    <span className="font-black text-xs sm:text-sm text-white">
                       Round {currentRound} ({getRoundBracketLabel(currentRound)}) —{' '}
                       {roundMatches.length} Games
                     </span>
-                    <span className="text-xs text-slate-400">
+                    <span className="text-xs text-slate-400 hidden sm:inline">
                       • {picks.length}/{teams.length} clubs used
                     </span>
                   </div>
@@ -2332,7 +2395,7 @@ export default function App() {
                       type="button"
                       disabled={syncingFixtures}
                       onClick={() => syncLiveFixtures(activeEntry.league, teams, false)}
-                      className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 disabled:opacity-50 border border-slate-700 text-xs font-bold text-slate-200 transition"
+                      className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 disabled:opacity-50 border border-slate-700 text-xs font-bold text-slate-200 transition"
                       title="Refresh official fixture dates and kickoff times"
                     >
                       <RefreshCw
@@ -2340,7 +2403,7 @@ export default function App() {
                           syncingFixtures ? 'animate-spin' : ''
                         }`}
                       />
-                      <span>{syncingFixtures ? 'Syncing...' : 'Sync Fixtures'}</span>
+                      <span>{syncingFixtures ? 'Syncing...' : 'Sync'}</span>
                     </button>
 
                     {activeRoundPick && !isCurrentRoundLocked && (
@@ -2348,12 +2411,12 @@ export default function App() {
                         type="button"
                         disabled={pickBusy}
                         onClick={handleClearPick}
-                        className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-rose-950/60 hover:bg-rose-900/70 disabled:opacity-50 border border-rose-700/70 text-xs font-bold text-rose-200 transition"
+                        className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-rose-950/60 hover:bg-rose-900/70 disabled:opacity-50 border border-rose-700/70 text-xs font-bold text-rose-200 transition"
                         title={`Remove ${activeRoundPick.team_name} from Round ${currentRound}`}
                       >
                         <Trash2 className="w-3.5 h-3.5 text-rose-400" />
                         <span>
-                          {pickBusy ? 'Clearing...' : `Clear Pick (${activeRoundPick.team_name})`}
+                          {pickBusy ? 'Clearing...' : `Clear (${activeRoundPick.team_name})`}
                         </span>
                       </button>
                     )}
@@ -2367,7 +2430,7 @@ export default function App() {
                           setStatusMessage('');
                         }}
                         disabled={currentRound === 1}
-                        className="px-3 py-1.5 bg-slate-800 hover:bg-slate-700 disabled:opacity-30 text-xs font-bold rounded-lg transition"
+                        className="px-2.5 py-1.5 bg-slate-800 hover:bg-slate-700 disabled:opacity-30 text-xs font-bold rounded-lg transition"
                       >
                         Prev
                       </button>
@@ -2379,13 +2442,13 @@ export default function App() {
                           setStatusMessage('');
                         }}
                         aria-label="Select Round from Dropdown"
-                        className="bg-slate-950 border border-slate-700 hover:border-blue-500 rounded-lg px-2.5 py-1.5 text-xs font-bold text-blue-300 focus:outline-none focus:border-blue-500 cursor-pointer"
+                        className="bg-slate-950 border border-slate-700 hover:border-blue-500 rounded-lg px-2 py-1.5 text-base sm:text-xs font-bold text-blue-300 focus:outline-none focus:border-blue-500 cursor-pointer"
                       >
                         {dropdownRounds.map((rNum) => {
                           const roundPick = picks.find((p) => Number(p.round) === rNum);
                           return (
                             <option key={rNum} value={rNum} className="bg-slate-900 text-white">
-                              Round {rNum} ({getRoundBracketLabel(rNum)})
+                              R{rNum} ({getRoundBracketLabel(rNum)})
                               {roundPick ? ` • ${roundPick.team_name}` : ''}
                             </option>
                           );
@@ -2398,7 +2461,7 @@ export default function App() {
                           setCurrentRound((r) => r + 1);
                           setStatusMessage('');
                         }}
-                        className="px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-xs font-bold rounded-lg transition"
+                        className="px-2.5 py-1.5 bg-slate-800 hover:bg-slate-700 text-xs font-bold rounded-lg transition"
                       >
                         Next
                       </button>
@@ -2447,7 +2510,7 @@ export default function App() {
                             onClick={() =>
                               handleSelectTeam(home, `vs ${away.short_code} (Home)`)
                             }
-                            className={`p-3 flex items-center gap-2.5 text-left transition ${
+                            className={`p-2.5 sm:p-3 flex items-center gap-2 text-left transition ${
                               homeSelectedHere
                                 ? 'bg-blue-950/90 text-white'
                                 : homeUsedElsewhere
@@ -2457,7 +2520,7 @@ export default function App() {
                                 : 'hover:bg-slate-800/80'
                             }`}
                           >
-                            <div className="w-8 h-8 rounded-lg bg-slate-800/90 p-1 flex items-center justify-center overflow-hidden border border-slate-700/60 shrink-0">
+                            <div className="w-7 h-7 sm:w-8 sm:h-8 rounded-lg bg-slate-800/90 p-1 flex items-center justify-center overflow-hidden border border-slate-700/60 shrink-0">
                               {home.logo_url ? (
                                 <img
                                   src={home.logo_url}
@@ -2473,7 +2536,7 @@ export default function App() {
                             </div>
 
                             <div className="min-w-0 flex-1">
-                              <div className="flex items-center gap-1.5">
+                              <div className="flex items-center gap-1">
                                 <span className="text-[9px] font-bold uppercase tracking-wider text-slate-500">
                                   Home
                                 </span>
@@ -2484,14 +2547,14 @@ export default function App() {
                               <div className="font-bold text-xs sm:text-sm text-white truncate">
                                 {home.name}
                               </div>
-                              <div className="text-[10px] font-semibold mt-0.5">
+                              <div className="text-[10px] font-semibold mt-0.5 truncate">
                                 {homeSelectedHere ? (
                                   <span className="text-blue-400">
-                                    {roundLocked ? 'Locked In' : 'Selected (Click to Clear)'}
+                                    {roundLocked ? 'Locked In' : 'Selected'}
                                   </span>
                                 ) : homeUsedElsewhere ? (
                                   <span className="text-amber-500/80">
-                                    Used in R{homeUsedRound} ({getRoundBracketLabel(homeUsedRound)})
+                                    Used R{homeUsedRound}
                                   </span>
                                 ) : (
                                   <span className="text-slate-500">{home.short_code}</span>
@@ -2519,7 +2582,7 @@ export default function App() {
                             onClick={() =>
                               handleSelectTeam(away, `@ ${home.short_code} (Away)`)
                             }
-                            className={`p-3 flex items-center justify-end gap-2.5 text-right transition ${
+                            className={`p-2.5 sm:p-3 flex items-center justify-end gap-2 text-right transition ${
                               awaySelectedHere
                                 ? 'bg-blue-950/90 text-white'
                                 : awayUsedElsewhere
@@ -2530,7 +2593,7 @@ export default function App() {
                             }`}
                           >
                             <div className="min-w-0 flex-1">
-                              <div className="flex items-center justify-end gap-1.5">
+                              <div className="flex items-center justify-end gap-1">
                                 {awaySelectedHere && (
                                   <CheckCircle2 className="w-3.5 h-3.5 text-blue-400 shrink-0" />
                                 )}
@@ -2541,14 +2604,14 @@ export default function App() {
                               <div className="font-bold text-xs sm:text-sm text-white truncate">
                                 {away.name}
                               </div>
-                              <div className="text-[10px] font-semibold mt-0.5">
+                              <div className="text-[10px] font-semibold mt-0.5 truncate">
                                 {awaySelectedHere ? (
                                   <span className="text-blue-400">
-                                    {roundLocked ? 'Locked In' : 'Selected (Click to Clear)'}
+                                    {roundLocked ? 'Locked In' : 'Selected'}
                                   </span>
                                 ) : awayUsedElsewhere ? (
                                   <span className="text-amber-500/80">
-                                    Used in R{awayUsedRound} ({getRoundBracketLabel(awayUsedRound)})
+                                    Used R{awayUsedRound}
                                   </span>
                                 ) : (
                                   <span className="text-slate-500">{away.short_code}</span>
@@ -2556,7 +2619,7 @@ export default function App() {
                               </div>
                             </div>
 
-                            <div className="w-8 h-8 rounded-lg bg-slate-800/90 p-1 flex items-center justify-center overflow-hidden border border-slate-700/60 shrink-0">
+                            <div className="w-7 h-7 sm:w-8 sm:h-8 rounded-lg bg-slate-800/90 p-1 flex items-center justify-center overflow-hidden border border-slate-700/60 shrink-0">
                               {away.logo_url ? (
                                 <img
                                   src={away.logo_url}
@@ -2622,7 +2685,7 @@ export default function App() {
                         {activeEntry.compName || `${activeEntry.league} Solo`} — Standings
                       </h2>
                       <p className="text-xs text-slate-400">
-                        Ranked by remaining lives • Missed tips receive a random available club at kickoff (or deduct 1 life if none remain)
+                        Ranked by remaining lives • Swipe table sideways to view all rounds
                       </p>
                     </div>
                   </div>
@@ -2637,10 +2700,10 @@ export default function App() {
                     <table className="w-full text-left border-collapse">
                       <thead>
                         <tr className="bg-slate-950/90 border-b border-slate-800 text-[11px] font-bold uppercase tracking-wider text-slate-400">
-                          <th className="py-3 px-4 sticky left-0 bg-slate-950 z-10 min-w-[170px]">
+                          <th className="py-3 px-4 sticky left-0 bg-slate-950 z-10 min-w-[150px] sm:min-w-[170px]">
                             Player
                           </th>
-                          <th className="py-3 px-3 text-center min-w-[85px]">Lives</th>
+                          <th className="py-3 px-3 text-center min-w-[80px]">Lives</th>
                           {horizontalRounds.map((rNum) => {
                             const started = isRoundStarted(rNum);
                             const actual = getActualLeagueRound(rNum);
@@ -2653,7 +2716,7 @@ export default function App() {
                                   setStatusMessage('');
                                 }}
                                 title={`Jump to Round ${rNum} (${getRoundBracketLabel(rNum)})`}
-                                className={`py-3 px-3 text-center min-w-[115px] cursor-pointer transition hover:text-white ${
+                                className={`py-3 px-3 text-center min-w-[105px] cursor-pointer transition hover:text-white ${
                                   rNum === Number(currentRound)
                                     ? 'text-blue-400 bg-blue-950/30 border-b-2 border-blue-500'
                                     : ''
@@ -2837,9 +2900,9 @@ export default function App() {
                   </div>
                 ) : (
                   <>
-                    <div className="p-4 space-y-3 max-h-[420px] min-h-[260px] overflow-y-auto bg-slate-950/60">
+                    <div className="p-4 space-y-3 max-h-[380px] min-h-[240px] overflow-y-auto bg-slate-950/60">
                       {leagueMessages.length === 0 ? (
-                        <div className="h-48 flex flex-col items-center justify-center text-center text-slate-500 text-xs">
+                        <div className="h-44 flex flex-col items-center justify-center text-center text-slate-500 text-xs">
                           <MessageSquare className="w-7 h-7 mb-2 opacity-40" />
                           <p className="font-bold text-slate-400">No messages posted yet</p>
                           <p className="mt-0.5">
@@ -2876,7 +2939,7 @@ export default function App() {
                                 )}
                               </div>
                               <div
-                                className={`max-w-[80%] sm:max-w-[70%] px-3.5 py-2.5 rounded-2xl text-xs sm:text-sm leading-relaxed break-words ${
+                                className={`max-w-[85%] sm:max-w-[70%] px-3.5 py-2.5 rounded-2xl text-xs sm:text-sm leading-relaxed break-words ${
                                   isMine
                                     ? 'bg-blue-600 text-white rounded-br-sm'
                                     : 'bg-slate-800 border border-slate-700/80 text-slate-100 rounded-bl-sm'
@@ -2901,7 +2964,7 @@ export default function App() {
                         placeholder={`Post a message to ${activeEntry.compName}...`}
                         value={newMessageText}
                         onChange={(e) => setNewMessageText(e.target.value)}
-                        className="flex-1 bg-slate-950 border border-slate-800 rounded-xl px-3.5 py-2.5 text-xs sm:text-sm text-white placeholder-slate-500 focus:outline-none focus:border-blue-500"
+                        className="flex-1 bg-slate-950 border border-slate-800 rounded-xl px-3.5 py-2.5 text-base sm:text-sm text-white placeholder-slate-500 focus:outline-none focus:border-blue-500"
                       />
                       <button
                         type="submit"
@@ -2925,7 +2988,7 @@ export default function App() {
       ===================================================================== */}
       {activeModal === 'howto' && (
         <div className="fixed inset-0 bg-black/80 backdrop-blur-sm z-50 flex items-center justify-center p-4">
-          <div className="bg-slate-900 border border-slate-800 rounded-2xl max-w-2xl w-full max-h-[88vh] overflow-y-auto p-6 shadow-2xl relative">
+          <div className="bg-slate-900 border border-slate-800 rounded-2xl max-w-2xl w-full max-h-[88vh] overflow-y-auto p-5 sm:p-6 shadow-2xl relative">
             <button
               onClick={() => setActiveModal(null)}
               className="absolute top-4 right-4 text-slate-400 hover:text-white"
@@ -2938,7 +3001,9 @@ export default function App() {
                 <HelpCircle className="w-6 h-6" />
               </div>
               <div>
-                <h3 className="font-black text-lg text-white">How to Play — Last Man Standing</h3>
+                <h3 className="font-black text-base sm:text-lg text-white">
+                  How to Play — Last Man Standing
+                </h3>
                 <p className="text-xs text-slate-400">
                   Survive round by round without repeating a club until only one tipper remains
                 </p>
@@ -2974,13 +3039,13 @@ export default function App() {
                 </div>
                 <ol className="space-y-2 text-xs text-slate-300 leading-relaxed list-decimal pl-4">
                   <li>
-                    <strong className="text-white">Select a Matchup Side:</strong> On the <strong className="text-blue-300">Pick Teams</strong> tab, every game shows <strong className="text-white">Home</strong> on the left vs <strong className="text-white">Away</strong> on the right, with the kickoff time converted to your computer&apos;s local timezone underneath. Click the club you want to back.
+                    <strong className="text-white">Select a Matchup Side:</strong> On the <strong className="text-blue-300">Pick Teams</strong> tab, every game shows <strong className="text-white">Home</strong> on the left vs <strong className="text-white">Away</strong> on the right, with the kickoff time converted to your device&apos;s local timezone underneath. Tap the club you want to back.
                   </li>
                   <li>
-                    <strong className="text-white">Plan Ahead Across Future Rounds:</strong> Use <strong className="text-white">Prev</strong>, <strong className="text-white">Next</strong>, or the <strong className="text-blue-300">Round Dropdown</strong> between them to jump into upcoming rounds and map out your picks in advance. Clubs already assigned to another round show <span className="text-amber-400 font-semibold">Used in R#</span> so you can&apos;t double-pick.
+                    <strong className="text-white">Plan Ahead Across Future Rounds:</strong> Use <strong className="text-white">Prev</strong>, <strong className="text-white">Next</strong>, or the <strong className="text-blue-300">Round Dropdown</strong> between them to jump into upcoming rounds and map out your picks in advance. Clubs already assigned to another round show <span className="text-amber-400 font-semibold">Used R#</span> so you can&apos;t double-pick.
                   </li>
                   <li>
-                    <strong className="text-white">Change or Clear Anytime Before Kickoff:</strong> As long as the round&apos;s first game hasn&apos;t kicked off yet, click another team to switch your tip, or click your selected team (or <span className="text-rose-300 font-semibold">Clear Pick</span>) to remove it.
+                    <strong className="text-white">Change or Clear Anytime Before Kickoff:</strong> As long as the round&apos;s first game hasn&apos;t kicked off yet, tap another team to switch your tip, or tap your selected team (or <span className="text-rose-300 font-semibold">Clear</span>) to remove it.
                   </li>
                 </ol>
               </div>
@@ -3055,7 +3120,7 @@ export default function App() {
                   placeholder={`e.g. Work Mates LMS ${getActiveSeasonInfo(formSport).label}`}
                   value={formCompName}
                   onChange={(e) => setFormCompName(e.target.value)}
-                  className="w-full bg-slate-950 border border-slate-800 rounded-xl p-3 text-sm text-white placeholder-slate-600 focus:outline-none focus:border-blue-500"
+                  className="w-full bg-slate-950 border border-slate-800 rounded-xl p-3 text-base sm:text-sm text-white placeholder-slate-600 focus:outline-none focus:border-blue-500"
                 />
               </div>
 
@@ -3157,7 +3222,7 @@ export default function App() {
                   placeholder="e.g. A8F3K2"
                   value={formInviteCode}
                   onChange={(e) => setFormInviteCode(e.target.value)}
-                  className="w-full bg-slate-950 border border-slate-800 rounded-xl p-3 text-sm font-mono uppercase text-white placeholder-slate-600 focus:outline-none focus:border-emerald-500"
+                  className="w-full bg-slate-950 border border-slate-800 rounded-xl p-3 text-base sm:text-sm font-mono uppercase text-white placeholder-slate-600 focus:outline-none focus:border-emerald-500"
                 />
               </div>
 
