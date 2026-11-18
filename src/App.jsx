@@ -8,7 +8,6 @@ import {
   RotateCcw,
   Calendar,
   Lock,
-  Swords,
   PlusCircle,
   LogIn,
   LogOut,
@@ -88,7 +87,6 @@ const FALLBACK_TEAMS = {
 
 const LAST_LEAGUE_STORAGE_KEY = 'lms_last_active_league_id';
 
-// Format any UTC Date into the user's local computer timezone (e.g., "Sun 2:00 am" in AU vs "Sat 3:00 pm" in UK)
 function formatLocalKickoff(dateObj) {
   if (!dateObj || isNaN(dateObj.getTime())) return 'TBD';
   return new Intl.DateTimeFormat(undefined, {
@@ -100,26 +98,132 @@ function formatLocalKickoff(dateObj) {
   }).format(dateObj);
 }
 
-// Compute the Round 1 baseline UTC kickoff (upcoming Saturday 15:00 UTC) so future rounds advance weekly
 function getDefaultRoundKickoffUTC(sport, roundNumber, dbSchedules) {
   const override = dbSchedules?.[Number(roundNumber)];
   if (override) {
     return new Date(override);
   }
 
-  // Anchor to upcoming Saturday 15:00 UTC (3:00 PM UK Saturday = 2:00 AM Sunday AEDT)
   const now = new Date();
   const base = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), 15, 0, 0));
-  const dayOfWeek = base.getUTCDay(); // 0 = Sun ... 6 = Sat
+  const dayOfWeek = base.getUTCDay();
   const daysUntilSat = (6 - dayOfWeek + 7) % 7 || 7;
   base.setUTCDate(base.getUTCDate() + daysUntilSat + (Number(roundNumber) - 1) * 7);
 
-  // Offset NRL/AFL slightly earlier in UTC (09:00 UTC = 8:00 PM AEDT)
   if (sport === 'NRL' || sport === 'AFL') {
     base.setUTCHours(9, 0, 0, 0);
   }
 
   return base;
+}
+
+// Symmetrical circle-method round-robin generator:
+// Guarantees every team plays at most once per round and Home vs Away is 100% reciprocal.
+function buildRoundMatchups(teamsList, sportCode, roundNumber, dbFixtures, dbSchedules) {
+  if (!teamsList || teamsList.length < 2) {
+    return { matches: [], byeTeam: null };
+  }
+
+  const byShortCode = new Map(teamsList.map((t) => [t.short_code, t]));
+  const roundDbFixtures = (dbFixtures || []).filter(
+    (f) => Number(f.round_number) === Number(roundNumber)
+  );
+
+  // 1. Use official DB fixtures if present for this round
+  if (roundDbFixtures.length > 0) {
+    const usedIds = new Set();
+    const matches = [];
+
+    roundDbFixtures.forEach((f, idx) => {
+      const home = byShortCode.get(f.home_short_code);
+      const away = byShortCode.get(f.away_short_code);
+      if (home && away) {
+        usedIds.add(String(home.id));
+        usedIds.add(String(away.id));
+        matches.push({
+          id: f.id || `db-match-${roundNumber}-${idx}`,
+          home,
+          away,
+          kickoffUTC: new Date(f.kickoff_utc),
+        });
+      }
+    });
+
+    const byeTeam = teamsList.find((t) => !usedIds.has(String(t.id))) || null;
+    matches.sort((a, b) => a.kickoffUTC - b.kickoffUTC);
+    return { matches, byeTeam };
+  }
+
+  // 2. Otherwise generate 100% symmetrical circle-method round-robin pairings
+  const pool = [...teamsList];
+  const hasBye = pool.length % 2 === 1;
+  if (hasBye) {
+    pool.push(null); // Bye placeholder
+  }
+
+  const n = pool.length;
+  const r = (Number(roundNumber) - 1) % (n - 1);
+
+  // Circle rotation: keep pool[0] fixed, rotate pool[1..n-1]
+  const rotated = [pool[0]];
+  for (let i = 1; i < n; i++) {
+    const idx = 1 + ((i - 1 + r) % (n - 1));
+    rotated.push(pool[idx]);
+  }
+
+  const roundStartUTC = getDefaultRoundKickoffUTC(sportCode, roundNumber, dbSchedules);
+  const matches = [];
+  let byeTeam = null;
+
+  for (let i = 0; i < n / 2; i++) {
+    const teamA = rotated[i];
+    const teamB = rotated[n - 1 - i];
+
+    if (!teamA && teamB) {
+      byeTeam = teamB;
+      continue;
+    }
+    if (!teamB && teamA) {
+      byeTeam = teamA;
+      continue;
+    }
+
+    // Alternate home/away cleanly each round
+    const flipHome = (Number(roundNumber) + i) % 2 === 1;
+    const home = flipHome ? teamB : teamA;
+    const away = flipHome ? teamA : teamB;
+
+    const kickoffUTC = new Date(roundStartUTC.getTime());
+    if (sportCode === 'EPL') {
+      // Realistic weekend kickoffs: Sat 12:30, Sat 15:00 (x5), Sat 17:30, Sun 14:00 (x2), Sun 16:30 UTC
+      const eplOffsets = [-2.5, 0, 0, 0, 0, 0, 2.5, 23, 23, 25.5];
+      kickoffUTC.setTime(
+        roundStartUTC.getTime() + eplOffsets[i % eplOffsets.length] * 3600 * 1000
+      );
+    } else if (sportCode === 'NRL') {
+      // Thu night, Fri 6pm, Fri 8pm, Sat 3pm, Sat 5:30pm, Sat 7:35pm, Sun 2pm, Sun 4:05pm
+      const nrlOffsets = [-47, -26, -24, -4, -1.5, 0.5, 19, 21];
+      kickoffUTC.setTime(
+        roundStartUTC.getTime() + nrlOffsets[i % nrlOffsets.length] * 3600 * 1000
+      );
+    } else {
+      // AFL: Thu night, Fri night, Sat afternoon/twilight/night, Sun afternoon/twilight
+      const aflOffsets = [-47.5, -24.5, -5.5, -2.5, 0.5, 0.5, 18, 20.5, 22];
+      kickoffUTC.setTime(
+        roundStartUTC.getTime() + aflOffsets[i % aflOffsets.length] * 3600 * 1000
+      );
+    }
+
+    matches.push({
+      id: `rr-${sportCode}-r${roundNumber}-${home.short_code}-${away.short_code}`,
+      home,
+      away,
+      kickoffUTC,
+    });
+  }
+
+  matches.sort((a, b) => a.kickoffUTC - b.kickoffUTC);
+  return { matches, byeTeam };
 }
 
 export default function App() {
@@ -143,7 +247,7 @@ export default function App() {
   const [sidebarPinned, setSidebarPinned] = useState(false);
   const [activeTab, setActiveTab] = useState('picks'); // 'picks' | 'standings'
 
-  // Live Clock Tick (updates every 15s to auto-lock rounds the instant kickoff arrives)
+  // Live Clock Tick
   const [nowTick, setNowTick] = useState(() => Date.now());
 
   // User's Joined Leagues
@@ -163,12 +267,14 @@ export default function App() {
 
   // Game, Schedules & Leaderboard State
   const [teams, setTeams] = useState([]);
+  const [dbFixtures, setDbFixtures] = useState([]);
   const [picks, setPicks] = useState([]);
   const [leagueMembers, setLeagueMembers] = useState([]);
   const [allLeaguePicks, setAllLeaguePicks] = useState([]);
   const [roundSchedules, setRoundSchedules] = useState({});
   const [currentRound, setCurrentRound] = useState(1);
   const [loading, setLoading] = useState(false);
+  const [pickBusy, setPickBusy] = useState(false);
   const [statusMessage, setStatusMessage] = useState('');
 
   const LEAGUE_CONFIG = {
@@ -177,20 +283,41 @@ export default function App() {
     EPL: { name: 'English Premier League', defaultRound: 1 },
   };
 
-  // Detect user's local timezone abbreviation (e.g. AEDT, GMT, PST)
   const userTimeZone = Intl.DateTimeFormat().resolvedOptions().timeZone || 'Local Time';
 
-  // Keep live clock ticking so kickoff locks trigger automatically in real time
   useEffect(() => {
     const timer = setInterval(() => setNowTick(Date.now()), 15000);
     return () => clearInterval(timer);
   }, []);
 
-  // Determine whether a specific round has kicked off based on UTC schedule vs current time
-  const isRoundStarted = (roundNum) => {
+  // Build current round's 100% symmetrical head-to-head matchups
+  const { matches: roundMatches, byeTeam: roundByeTeam } = buildRoundMatchups(
+    teams,
+    activeEntry?.league || 'NRL',
+    currentRound,
+    dbFixtures,
+    roundSchedules
+  );
+
+  // First kickoff of a round determines when that round locks and reveals everyone's picks
+  const getRoundFirstKickoff = (roundNum) => {
     const sportCode = activeEntry?.league || 'NRL';
-    const kickoffDate = getDefaultRoundKickoffUTC(sportCode, roundNum, roundSchedules);
-    return nowTick >= kickoffDate.getTime();
+    const { matches } = buildRoundMatchups(
+      teams,
+      sportCode,
+      roundNum,
+      dbFixtures,
+      roundSchedules
+    );
+    if (matches.length > 0) {
+      return matches[0].kickoffUTC;
+    }
+    return getDefaultRoundKickoffUTC(sportCode, roundNum, roundSchedules);
+  };
+
+  const isRoundStarted = (roundNum) => {
+    const firstKickoff = getRoundFirstKickoff(roundNum);
+    return nowTick >= firstKickoff.getTime();
   };
 
   const openSavedLeague = (membership, playerName) => {
@@ -388,39 +515,7 @@ export default function App() {
     setAuthSuccess('');
   };
 
-  // Compute deterministic opponent & individual game kickoff time in UTC for each match slot
-  const getMatchDetails = (teamIndex, totalTeams, round) => {
-    const sportCode = activeEntry?.league || 'NRL';
-    const roundStartUTC = getDefaultRoundKickoffUTC(sportCode, round, roundSchedules);
-
-    if (totalTeams < 2) {
-      return { opponentIndex: null, isHome: true, kickoffUTC: roundStartUTC };
-    }
-
-    const opponentIndex =
-      (teamIndex + round) % totalTeams === teamIndex
-        ? (teamIndex + 1) % totalTeams
-        : (teamIndex + round) % totalTeams;
-    const isHome = (teamIndex + round) % 2 === 0;
-
-    // Pair both teams in the same matchup to share the exact same kickoff time slot
-    const matchSlot = Math.min(teamIndex, opponentIndex) % 4;
-    const kickoffUTC = new Date(roundStartUTC.getTime());
-
-    if (sportCode === 'EPL') {
-      // Slot 0: Sat 15:00 UTC (Sun 2:00 AM AEDT), Slot 1: Sat 17:30 UTC, Slot 2: Sun 14:00 UTC, Slot 3: Sun 16:30 UTC
-      const offsetsHours = [0, 2.5, 23, 25.5];
-      kickoffUTC.setTime(roundStartUTC.getTime() + offsetsHours[matchSlot] * 3600 * 1000);
-    } else {
-      // NRL/AFL: Fri night, Sat afternoon, Sat night, Sun afternoon
-      const offsetsHours = [-24, -4, 0, 20];
-      kickoffUTC.setTime(roundStartUTC.getTime() + offsetsHours[matchSlot] * 3600 * 1000);
-    }
-
-    return { opponentIndex, isHome, kickoffUTC };
-  };
-
-  // Load Teams, Round Schedules, Standings & Picks when entering a league
+  // Load Teams, Fixtures, Round Schedules, Standings & Picks when entering a league
   useEffect(() => {
     if (!activeEntry) return;
 
@@ -428,9 +523,10 @@ export default function App() {
       setLoading(true);
       const sportCode = activeEntry.league || 'NRL';
 
-      const [teamsRes, schedRes] = await Promise.all([
+      const [teamsRes, schedRes, fixRes] = await Promise.all([
         supabase.from('teams').select('*').eq('league', sportCode).order('name'),
-        supabase.from('round_schedules').select('*').eq('sport', sportCode)
+        supabase.from('round_schedules').select('*').eq('sport', sportCode),
+        supabase.from('fixtures').select('*').eq('sport', sportCode)
       ]);
 
       if (!teamsRes.error && teamsRes.data && teamsRes.data.length > 0) {
@@ -447,6 +543,12 @@ export default function App() {
         setRoundSchedules(map);
       } else {
         setRoundSchedules({});
+      }
+
+      if (!fixRes.error && fixRes.data) {
+        setDbFixtures(fixRes.data);
+      } else {
+        setDbFixtures([]);
       }
 
       const defaultRnd = LEAGUE_CONFIG[sportCode]?.defaultRound || 1;
@@ -498,44 +600,73 @@ export default function App() {
     }
   }
 
-  // Map every picked team ID -> the round number it was used in (across all past & future rounds)
   const teamRoundMap = new Map(picks.map((p) => [String(p.team_id), Number(p.round)]));
   const activeRoundPick = picks.find((p) => Number(p.round) === Number(currentRound));
   const isCurrentRoundLocked = isRoundStarted(Number(currentRound));
 
-  // Clear pick for the current unplayed round so the user can reorder or leave it open
-  const handleClearPick = async () => {
-    if (!activeRoundPick) return;
+  // Clear pick permanently in Supabase + local state
+  const handleClearPick = async (e) => {
+    if (e) {
+      e.preventDefault();
+      e.stopPropagation();
+    }
+    if (!activeRoundPick || pickBusy) return;
 
     if (isCurrentRoundLocked) {
       setStatusMessage(`Round ${currentRound} has already kicked off—picks can no longer be cleared.`);
       return;
     }
 
+    setPickBusy(true);
     const clearedTeamName = activeRoundPick.team_name;
-    setPicks((prev) => prev.filter((p) => Number(p.round) !== Number(currentRound)));
+    const roundToClear = Number(currentRound);
 
-    if (activeEntry.compId && session?.user?.id) {
-      const { error } = await supabase
-        .from('picks')
-        .delete()
-        .eq('league_id', activeEntry.compId)
-        .eq('user_id', session.user.id)
-        .eq('round_number', Number(currentRound));
+    try {
+      if (activeEntry.compId && session?.user?.id) {
+        const { data: deletedRows, error } = await supabase
+          .from('picks')
+          .delete()
+          .eq('league_id', activeEntry.compId)
+          .eq('user_id', session.user.id)
+          .eq('round_number', roundToClear)
+          .select();
 
-      if (error) {
-        setStatusMessage(`Error clearing pick: ${error.message}`);
-        return;
+        if (error) {
+          setStatusMessage(`Error clearing pick: ${error.message}`);
+          return;
+        }
+
+        if (!deletedRows || deletedRows.length === 0) {
+          setStatusMessage(
+            'Database blocked delete: Run the DELETE policy SQL in Supabase so picks can be cleared.'
+          );
+          await refreshLeagueBoard(activeEntry.compId);
+          return;
+        }
+
+        setPicks((prev) => prev.filter((p) => Number(p.round) !== roundToClear));
+        setAllLeaguePicks((prev) =>
+          prev.filter(
+            (p) =>
+              !(
+                p.user_id === session.user.id &&
+                Number(p.round_number) === roundToClear
+              )
+          )
+        );
+      } else {
+        setPicks((prev) => prev.filter((p) => Number(p.round) !== roundToClear));
       }
 
-      await refreshLeagueBoard(activeEntry.compId);
+      setStatusMessage(`Cleared ${clearedTeamName} from Round ${roundToClear}.`);
+    } finally {
+      setPickBusy(false);
     }
-
-    setStatusMessage(`Cleared ${clearedTeamName} from Round ${currentRound}.`);
   };
 
   // Lock in (or toggle off if clicked again before kickoff) a team pick
   const handleSelectTeam = async (team, fixtureText) => {
+    if (pickBusy) return;
     const teamIdStr = String(team.id);
 
     if (activeEntry.remainingLives <= 0) {
@@ -548,7 +679,6 @@ export default function App() {
       return;
     }
 
-    // Clicking the already-selected team for this round clears the pick cleanly
     if (activeRoundPick && String(activeRoundPick.team_id) === teamIdStr) {
       await handleClearPick();
       return;
@@ -562,38 +692,43 @@ export default function App() {
       return;
     }
 
-    const updated = picks.filter((p) => Number(p.round) !== Number(currentRound));
-    setPicks([
-      ...updated,
-      {
-        round: Number(currentRound),
-        team_id: teamIdStr,
-        team_name: team.name,
-        fixture: fixtureText
-      }
-    ]);
-
-    if (activeEntry.compId && session?.user?.id) {
-      const { error } = await supabase.from('picks').upsert(
+    setPickBusy(true);
+    try {
+      const updated = picks.filter((p) => Number(p.round) !== Number(currentRound));
+      setPicks([
+        ...updated,
         {
-          league_id: activeEntry.compId,
-          user_id: session.user.id,
-          round_number: Number(currentRound),
-          team_id: team.id,
-          status: 'pending'
-        },
-        { onConflict: 'league_id,user_id,round_number' }
-      );
+          round: Number(currentRound),
+          team_id: teamIdStr,
+          team_name: team.name,
+          fixture: fixtureText
+        }
+      ]);
 
-      if (error) {
-        setStatusMessage(`Error saving pick: ${error.message}`);
-        return;
+      if (activeEntry.compId && session?.user?.id) {
+        const { error } = await supabase.from('picks').upsert(
+          {
+            league_id: activeEntry.compId,
+            user_id: session.user.id,
+            round_number: Number(currentRound),
+            team_id: team.id,
+            status: 'pending'
+          },
+          { onConflict: 'league_id,user_id,round_number' }
+        );
+
+        if (error) {
+          setStatusMessage(`Error saving pick: ${error.message}`);
+          return;
+        }
+
+        await refreshLeagueBoard(activeEntry.compId);
       }
 
-      await refreshLeagueBoard(activeEntry.compId);
+      setStatusMessage(`Locked in ${team.name} (${fixtureText}) for Round ${currentRound}.`);
+    } finally {
+      setPickBusy(false);
     }
-
-    setStatusMessage(`Locked in ${team.name} (${fixtureText}) for Round ${currentRound}.`);
   };
 
   // Create League in 'leagues' table + auto-join creator in 'league_members'
@@ -925,9 +1060,7 @@ export default function App() {
   const isSidebarOpen = sidebarHovered || sidebarPinned;
   const maxRoundDisplay = Math.max(currentRound + 3, 12);
   const horizontalRounds = Array.from({ length: maxRoundDisplay }, (_, i) => i + 1);
-  const currentRoundKickoff = activeEntry
-    ? getDefaultRoundKickoffUTC(activeEntry.league || 'NRL', currentRound, roundSchedules)
-    : null;
+  const currentRoundKickoff = activeEntry ? getRoundFirstKickoff(currentRound) : null;
 
   return (
     <div className="min-h-screen bg-[radial-gradient(ellipse_at_top,_var(--tw-gradient-stops))] from-blue-950 via-slate-950 to-black text-slate-100 flex relative overflow-x-hidden font-sans">
@@ -936,7 +1069,7 @@ export default function App() {
         className="fixed top-0 left-0 w-4 h-full z-40 cursor-pointer"
       />
 
-      {/* Clean Slide-out Sidebar (Navigation & Saved Comps Only) */}
+      {/* Clean Slide-out Sidebar */}
       <aside
         onMouseEnter={() => setSidebarHovered(true)}
         onMouseLeave={() => setSidebarHovered(false)}
@@ -1309,7 +1442,7 @@ export default function App() {
           </div>
         ) : (
           /* View 2: Tabbed League Workspace ("Pick Teams" | "Standings") */
-          <main className="p-4 md:p-6 max-w-7xl w-full mx-auto space-y-4">
+          <main className="p-4 md:p-6 max-w-6xl w-full mx-auto space-y-4">
             {/* League Header + Pick Teams / Standings Tab Switcher */}
             <div className="flex flex-col sm:flex-row sm:items-center justify-between bg-slate-900 border border-slate-800 px-4 py-3 rounded-xl gap-3">
               <div>
@@ -1327,7 +1460,7 @@ export default function App() {
                 <div className="flex items-center gap-2 text-xs text-slate-400 mt-1">
                   <Clock className="w-3.5 h-3.5 text-blue-400" />
                   <span>
-                    Round {currentRound} Kickoff ({userTimeZone}):{' '}
+                    Round {currentRound} First Kickoff ({userTimeZone}):{' '}
                     <strong className="text-slate-200">
                       {formatLocalKickoff(currentRoundKickoff)}
                     </strong>
@@ -1383,7 +1516,7 @@ export default function App() {
               </div>
             )}
 
-            {/* TAB 1: PICK TEAMS */}
+            {/* TAB 1: HEAD-TO-HEAD MATCHUPS (HOME vs AWAY) */}
             {activeTab === 'picks' ? (
               <>
                 {/* Round Selector + Clear Pick Controls */}
@@ -1391,29 +1524,32 @@ export default function App() {
                   <div className="flex items-center gap-2.5">
                     <Calendar className="w-4 h-4 text-blue-400" />
                     <span className="font-black text-sm text-white">
-                      Round {currentRound} Selections
+                      Round {currentRound} Fixtures ({roundMatches.length} Games)
                     </span>
                     <span className="text-xs text-slate-400">
-                      ({picks.length}/{teams.length} clubs used across season)
+                      • {picks.length}/{teams.length} clubs used across season
                     </span>
                   </div>
 
                   <div className="flex items-center gap-2">
-                    {/* Clear Pick Button (Only shown when round hasn't started and a pick exists) */}
                     {activeRoundPick && !isCurrentRoundLocked && (
                       <button
                         type="button"
+                        disabled={pickBusy}
                         onClick={handleClearPick}
-                        className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-rose-950/60 hover:bg-rose-900/70 border border-rose-700/70 text-xs font-bold text-rose-200 transition"
+                        className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-rose-950/60 hover:bg-rose-900/70 disabled:opacity-50 border border-rose-700/70 text-xs font-bold text-rose-200 transition"
                         title={`Remove ${activeRoundPick.team_name} from Round ${currentRound}`}
                       >
                         <Trash2 className="w-3.5 h-3.5 text-rose-400" />
-                        <span>Clear Pick ({activeRoundPick.team_name})</span>
+                        <span>
+                          {pickBusy ? 'Clearing...' : `Clear Pick (${activeRoundPick.team_name})`}
+                        </span>
                       </button>
                     )}
 
                     <div className="flex items-center gap-1.5">
                       <button
+                        type="button"
                         onClick={() => {
                           setCurrentRound((r) => Math.max(1, r - 1));
                           setStatusMessage('');
@@ -1427,6 +1563,7 @@ export default function App() {
                         R{currentRound}
                       </span>
                       <button
+                        type="button"
                         onClick={() => {
                           setCurrentRound((r) => r + 1);
                           setStatusMessage('');
@@ -1439,109 +1576,205 @@ export default function App() {
                   </div>
                 </div>
 
-                {/* Compact 5-Column Team Grid with Local Kickoff Date/Time */}
-                <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 xl:grid-cols-5 gap-2.5">
-                  {teams.map((team, index) => {
-                    const usedInRound = teamRoundMap.get(String(team.id));
-                    const isSelectedThisRound = usedInRound === Number(currentRound);
-                    const isUsedInAnotherRound =
-                      usedInRound !== undefined && usedInRound !== Number(currentRound);
-
-                    const { opponentIndex, isHome, kickoffUTC } = getMatchDetails(
-                      index,
-                      teams.length,
-                      currentRound
-                    );
-                    const opponent = opponentIndex !== null ? teams[opponentIndex] : null;
-                    const fixtureText = opponent
-                      ? `${isHome ? 'vs' : '@'} ${opponent.short_code || opponent.name}`
-                      : 'Bye';
+                {/* Head-to-Head Matchup Cards: Home Team (Left) vs Away Team (Right) + Kickoff Underneath */}
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                  {roundMatches.map((match) => {
+                    const { home, away, kickoffUTC } = match;
                     const localGameTime = formatLocalKickoff(kickoffUTC);
 
+                    const homeUsedRound = teamRoundMap.get(String(home.id));
+                    const homeSelectedHere = homeUsedRound === Number(currentRound);
+                    const homeUsedElsewhere =
+                      homeUsedRound !== undefined && !homeSelectedHere;
+
+                    const awayUsedRound = teamRoundMap.get(String(away.id));
+                    const awaySelectedHere = awayUsedRound === Number(currentRound);
+                    const awayUsedElsewhere =
+                      awayUsedRound !== undefined && !awaySelectedHere;
+
+                    const gameStarted = nowTick >= kickoffUTC.getTime();
+                    const roundLocked = isCurrentRoundLocked || gameStarted;
+
                     return (
-                      <button
-                        key={team.id}
-                        disabled={
-                          isUsedInAnotherRound ||
-                          isCurrentRoundLocked ||
-                          activeEntry.remainingLives <= 0
-                        }
-                        onClick={() => handleSelectTeam(team, fixtureText)}
-                        className={`p-2.5 rounded-xl border text-left flex flex-col justify-between min-h-[108px] transition-all relative ${
-                          isSelectedThisRound
-                            ? 'bg-blue-950/90 border-blue-500 ring-1 ring-blue-500/60 shadow-md'
-                            : isUsedInAnotherRound
-                            ? 'bg-slate-900/30 border-slate-800/40 opacity-40 cursor-not-allowed'
-                            : isCurrentRoundLocked
-                            ? 'bg-slate-900/60 border-slate-800 opacity-60 cursor-not-allowed'
-                            : 'bg-slate-900 border-slate-800 hover:border-slate-600 hover:bg-slate-800/70'
+                      <div
+                        key={match.id}
+                        className={`bg-slate-900 border rounded-xl overflow-hidden transition ${
+                          homeSelectedHere || awaySelectedHere
+                            ? 'border-blue-500/80 ring-1 ring-blue-500/40 shadow-lg'
+                            : 'border-slate-800'
                         }`}
                       >
-                        <div>
-                          <div className="flex items-center justify-between gap-1.5 mb-1.5">
-                            <div className="flex items-center gap-1.5">
-                              <div className="w-6 h-6 rounded-md bg-slate-800/90 p-0.5 flex items-center justify-center overflow-hidden border border-slate-700/60 shrink-0">
-                                {team.logo_url ? (
-                                  <img
-                                    src={team.logo_url}
-                                    alt={team.name}
-                                    className="w-full h-full object-contain"
-                                    onError={handleLogoError}
-                                  />
-                                ) : (
-                                  <span className="font-mono text-[9px] font-bold text-slate-400">
-                                    {team.short_code}
-                                  </span>
+                        {/* Top Row: Home Team | v | Away Team */}
+                        <div className="grid grid-cols-[1fr_auto_1fr] items-stretch">
+                          {/* HOME TEAM BUTTON (LEFT) */}
+                          <button
+                            type="button"
+                            disabled={
+                              pickBusy ||
+                              homeUsedElsewhere ||
+                              roundLocked ||
+                              activeEntry.remainingLives <= 0
+                            }
+                            onClick={() =>
+                              handleSelectTeam(home, `vs ${away.short_code} (Home)`)
+                            }
+                            className={`p-3 flex items-center gap-2.5 text-left transition ${
+                              homeSelectedHere
+                                ? 'bg-blue-950/90 text-white'
+                                : homeUsedElsewhere
+                                ? 'bg-slate-950/40 opacity-40 cursor-not-allowed'
+                                : roundLocked
+                                ? 'opacity-65 cursor-not-allowed'
+                                : 'hover:bg-slate-800/80'
+                            }`}
+                          >
+                            <div className="w-8 h-8 rounded-lg bg-slate-800/90 p-1 flex items-center justify-center overflow-hidden border border-slate-700/60 shrink-0">
+                              {home.logo_url ? (
+                                <img
+                                  src={home.logo_url}
+                                  alt={home.name}
+                                  className="w-full h-full object-contain"
+                                  onError={handleLogoError}
+                                />
+                              ) : (
+                                <span className="font-mono text-[10px] font-bold text-slate-400">
+                                  {home.short_code}
+                                </span>
+                              )}
+                            </div>
+
+                            <div className="min-w-0 flex-1">
+                              <div className="flex items-center gap-1.5">
+                                <span className="text-[9px] font-bold uppercase tracking-wider text-slate-500">
+                                  Home
+                                </span>
+                                {homeSelectedHere && (
+                                  <CheckCircle2 className="w-3.5 h-3.5 text-blue-400 shrink-0" />
                                 )}
                               </div>
-                              <span className="font-mono text-[11px] font-bold text-slate-400">
-                                {team.short_code}
-                              </span>
+                              <div className="font-bold text-xs sm:text-sm text-white truncate">
+                                {home.name}
+                              </div>
+                              <div className="text-[10px] font-semibold mt-0.5">
+                                {homeSelectedHere ? (
+                                  <span className="text-blue-400">
+                                    {roundLocked ? 'Locked In' : 'Selected (Click to Clear)'}
+                                  </span>
+                                ) : homeUsedElsewhere ? (
+                                  <span className="text-amber-500/80">
+                                    Used in R{homeUsedRound}
+                                  </span>
+                                ) : (
+                                  <span className="text-slate-500">{home.short_code}</span>
+                                )}
+                              </div>
                             </div>
+                          </button>
 
-                            <div
-                              className={`flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-bold font-mono ${
-                                isSelectedThisRound
-                                  ? 'bg-blue-900/80 text-blue-200 border border-blue-700'
-                                  : 'bg-slate-800 text-slate-300 border border-slate-700'
-                              }`}
-                            >
-                              <Swords className="w-2.5 h-2.5 text-slate-400" />
-                              <span>{fixtureText}</span>
-                            </div>
+                          {/* CENTER "V" DIVIDER */}
+                          <div className="flex items-center justify-center px-2 bg-slate-950/50 border-x border-slate-800/70">
+                            <span className="text-[11px] font-black uppercase text-slate-500">
+                              v
+                            </span>
                           </div>
 
-                          <div className="font-bold text-xs text-white line-clamp-1">{team.name}</div>
+                          {/* AWAY TEAM BUTTON (RIGHT) */}
+                          <button
+                            type="button"
+                            disabled={
+                              pickBusy ||
+                              awayUsedElsewhere ||
+                              roundLocked ||
+                              activeEntry.remainingLives <= 0
+                            }
+                            onClick={() =>
+                              handleSelectTeam(away, `@ ${home.short_code} (Away)`)
+                            }
+                            className={`p-3 flex items-center justify-end gap-2.5 text-right transition ${
+                              awaySelectedHere
+                                ? 'bg-blue-950/90 text-white'
+                                : awayUsedElsewhere
+                                ? 'bg-slate-950/40 opacity-40 cursor-not-allowed'
+                                : roundLocked
+                                ? 'opacity-65 cursor-not-allowed'
+                                : 'hover:bg-slate-800/80'
+                            }`}
+                          >
+                            <div className="min-w-0 flex-1">
+                              <div className="flex items-center justify-end gap-1.5">
+                                {awaySelectedHere && (
+                                  <CheckCircle2 className="w-3.5 h-3.5 text-blue-400 shrink-0" />
+                                )}
+                                <span className="text-[9px] font-bold uppercase tracking-wider text-slate-500">
+                                  Away
+                                </span>
+                              </div>
+                              <div className="font-bold text-xs sm:text-sm text-white truncate">
+                                {away.name}
+                              </div>
+                              <div className="text-[10px] font-semibold mt-0.5">
+                                {awaySelectedHere ? (
+                                  <span className="text-blue-400">
+                                    {roundLocked ? 'Locked In' : 'Selected (Click to Clear)'}
+                                  </span>
+                                ) : awayUsedElsewhere ? (
+                                  <span className="text-amber-500/80">
+                                    Used in R{awayUsedRound}
+                                  </span>
+                                ) : (
+                                  <span className="text-slate-500">{away.short_code}</span>
+                                )}
+                              </div>
+                            </div>
 
-                          {/* Local Computer Date & Time */}
-                          <div className="flex items-center gap-1 text-[10px] text-slate-400 mt-1">
-                            <Clock className="w-2.5 h-2.5 text-slate-500 shrink-0" />
-                            <span className="truncate">{localGameTime}</span>
-                          </div>
+                            <div className="w-8 h-8 rounded-lg bg-slate-800/90 p-1 flex items-center justify-center overflow-hidden border border-slate-700/60 shrink-0">
+                              {away.logo_url ? (
+                                <img
+                                  src={away.logo_url}
+                                  alt={away.name}
+                                  className="w-full h-full object-contain"
+                                  onError={handleLogoError}
+                                />
+                              ) : (
+                                <span className="font-mono text-[10px] font-bold text-slate-400">
+                                  {away.short_code}
+                                </span>
+                              )}
+                            </div>
+                          </button>
                         </div>
 
-                        <div className="text-[9px] font-bold uppercase tracking-wider mt-2 pt-1.5 border-t border-slate-800/60 flex items-center justify-between">
-                          {isSelectedThisRound ? (
-                            <>
-                              <span className="text-blue-400 font-black">
-                                {isCurrentRoundLocked
-                                  ? `Locked (R${currentRound})`
-                                  : 'Selected • Click to Clear'}
-                              </span>
-                              <CheckCircle2 className="w-3 h-3 text-blue-400" />
-                            </>
-                          ) : isUsedInAnotherRound ? (
-                            <span className="text-amber-500/80">Used in R{usedInRound}</span>
-                          ) : isCurrentRoundLocked ? (
-                            <span className="text-rose-400/80">Round Started</span>
-                          ) : (
-                            <span className="text-slate-500">Select R{currentRound}</span>
-                          )}
+                        {/* Bottom Footer Bar: Local Date & Time of Play */}
+                        <div className="px-3 py-1.5 bg-slate-950/80 border-t border-slate-800/80 flex items-center justify-center gap-1.5 text-[11px] text-slate-400">
+                          <Clock className="w-3 h-3 text-slate-500 shrink-0" />
+                          <span>{localGameTime}</span>
                         </div>
-                      </button>
+                      </div>
                     );
                   })}
                 </div>
+
+                {/* Bye Club Notice (For odd-numbered leagues like 17-team NRL) */}
+                {roundByeTeam && (
+                  <div className="bg-slate-900/60 border border-slate-800 rounded-xl px-4 py-2.5 flex items-center justify-between text-xs text-slate-400">
+                    <div className="flex items-center gap-2.5">
+                      {roundByeTeam.logo_url && (
+                        <img
+                          src={roundByeTeam.logo_url}
+                          alt={roundByeTeam.name}
+                          className="w-5 h-5 object-contain opacity-60"
+                          onError={handleLogoError}
+                        />
+                      )}
+                      <span>
+                        <strong className="text-slate-300">{roundByeTeam.name}</strong> has a{' '}
+                        <span className="font-bold uppercase text-amber-400/90">Bye</span> in Round{' '}
+                        {currentRound}
+                      </span>
+                    </div>
+                    <span className="text-[11px] text-slate-500">Not available to pick</span>
+                  </div>
+                )}
               </>
             ) : (
               /* TAB 2: STANDINGS & LEAGUE TIPS */
@@ -1667,7 +1900,6 @@ export default function App() {
                                     Number(p.round_number) === rNum
                                 );
 
-                                // Only reveal other players' tips once the first game of that round has kicked off
                                 const canSeePick = isMe || isRoundStarted(rNum);
 
                                 return (
@@ -1682,11 +1914,7 @@ export default function App() {
                                     ) : !canSeePick ? (
                                       <span
                                         title={`Hidden until Round ${rNum} kickoff (${formatLocalKickoff(
-                                          getDefaultRoundKickoffUTC(
-                                            activeEntry.league || 'NRL',
-                                            rNum,
-                                            roundSchedules
-                                          )
+                                          getRoundFirstKickoff(rNum)
                                         )})`}
                                         className="inline-flex items-center gap-1 text-[11px] font-semibold text-slate-400 bg-slate-800/80 px-2 py-0.5 rounded-md border border-slate-700/60"
                                       >
@@ -1858,36 +2086,4 @@ export default function App() {
             </div>
 
             {formError && (
-              <div className="p-3 mb-4 bg-rose-950/50 border border-rose-800 text-rose-300 text-xs rounded-lg flex items-center gap-2">
-                <AlertCircle className="w-4 h-4 shrink-0" />
-                <span>{formError}</span>
-              </div>
-            )}
-
-            <form onSubmit={handleJoinCompetition} className="space-y-4">
-              <div>
-                <label className="text-xs font-bold uppercase tracking-wider text-slate-400 block mb-1">
-                  Invite Code
-                </label>
-                <input
-                  type="text"
-                  placeholder="e.g. A8F3K2"
-                  value={formInviteCode}
-                  onChange={(e) => setFormInviteCode(e.target.value)}
-                  className="w-full bg-slate-950 border border-slate-800 rounded-xl p-3 text-sm font-mono uppercase text-white placeholder-slate-600 focus:outline-none focus:border-emerald-500"
-                />
-              </div>
-
-              <button
-                type="submit"
-                className="w-full py-3 bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-sm rounded-xl transition shadow-lg mt-2"
-              >
-                Join League
-              </button>
-            </form>
-          </div>
-        </div>
-      )}
-    </div>
-  );
-}
+              <div className="p-3 mb-4 bg-rose-950/50 border border-rose-800 text-rose-3
