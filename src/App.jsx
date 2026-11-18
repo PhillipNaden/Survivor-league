@@ -790,46 +790,37 @@ export default function App() {
     const sportCode = sportOverride || activeEntry?.league || 'EPL';
     const activeTeamsList = teamsOverride || teams;
     const seasonInfo = getActiveSeasonInfo(sportCode);
-    const footballDataKey = import.meta.env.VITE_FOOTBALL_DATA_KEY;
 
     if (syncingFixtures) return null;
 
     setSyncingFixtures(true);
     if (!silent) {
-      setStatusMessage(
-        `Syncing official ${sportCode} ${seasonInfo.label} fixtures...`
-      );
+      setStatusMessage(`Syncing official ${sportCode} ${seasonInfo.label} fixtures...`);
     }
 
     try {
       const rowsMap = new Map();
 
-      // 1. Official Premier League feed via football-data.org (requires VITE_FOOTBALL_DATA_KEY)
-      if (sportCode === 'EPL' && footballDataKey) {
+      // 1. Official Premier League feed (all 380 matches, zero API key needed)
+      if (sportCode === 'EPL') {
         try {
-          const fdUrl = `https://api.football-data.org/v4/competitions/PL/matches?season=${seasonInfo.footballDataSeason}`;
-          const fdRes = await fetch(fdUrl, {
-            headers: { 'X-Auth-Token': footballDataKey }
-          });
-          if (fdRes.ok) {
-            const fdJson = await fdRes.json();
-            const matchesList = fdJson?.matches || [];
-            matchesList.forEach((m) => {
-              const roundNum = Number(m.matchday);
-              if (!roundNum || isNaN(roundNum)) return;
+          const proxyRes = await fetch('/api/epl-fixtures');
+          if (proxyRes.ok) {
+            const proxyJson = await proxyRes.json();
+            (proxyJson.fixtures || []).forEach((m) => {
+              const roundNum = Number(m.round_number);
+              if (!roundNum || !m.kickoff_utc) return;
 
               const homeCode =
-                resolveTeamShortCode(m.homeTeam?.name, activeTeamsList) ||
-                resolveTeamShortCode(m.homeTeam?.shortName, activeTeamsList) ||
-                m.homeTeam?.tla;
+                resolveTeamShortCode(m.home_name, activeTeamsList) ||
+                resolveTeamShortCode(m.home_short, activeTeamsList);
               const awayCode =
-                resolveTeamShortCode(m.awayTeam?.name, activeTeamsList) ||
-                resolveTeamShortCode(m.awayTeam?.shortName, activeTeamsList) ||
-                m.awayTeam?.tla;
+                resolveTeamShortCode(m.away_name, activeTeamsList) ||
+                resolveTeamShortCode(m.away_short, activeTeamsList);
 
               if (!homeCode || !awayCode || homeCode === awayCode) return;
 
-              const parsed = new Date(m.utcDate);
+              const parsed = new Date(m.kickoff_utc);
               if (isNaN(parsed.getTime())) return;
 
               rowsMap.set(`${sportCode}-${roundNum}-${homeCode}`, {
@@ -842,11 +833,11 @@ export default function App() {
             });
           }
         } catch {
-          // Fall through if network/CORS blocks direct browser call
+          // Fall through if running purely locally
         }
       }
 
-      // 2. Also query TheSportsDB for NRL, AFL, or EPL fallback
+      // 2. For NRL / AFL (or local fallback), query TheSportsDB
       const leagueId = SPORTSDB_LEAGUE_IDS[sportCode];
       if (leagueId && rowsMap.size === 0) {
         const tsdbUrl = `https://www.thesportsdb.com/api/v1/json/123/eventsseason.php?id=${leagueId}&s=${seasonInfo.sportsDbSeason}`;
@@ -892,11 +883,7 @@ export default function App() {
 
       if (upsertRows.length === 0) {
         if (!silent) {
-          setStatusMessage(
-            sportCode === 'EPL' && !footballDataKey
-              ? 'Showing verified database fixtures. Add VITE_FOOTBALL_DATA_KEY in Vercel to enable live API auto-sync.'
-              : `No new official ${sportCode} ${seasonInfo.label} fixtures published yet.`
-          );
+          setStatusMessage(`No official ${sportCode} ${seasonInfo.label} fixtures published yet.`);
         }
         return null;
       }
