@@ -18,7 +18,9 @@ import {
   Users,
   Trash2,
   Clock,
-  LayoutGrid
+  LayoutGrid,
+  RefreshCw,
+  EyeOff
 } from 'lucide-react';
 
 const FALLBACK_TEAMS = {
@@ -85,6 +87,121 @@ const FALLBACK_TEAMS = {
   ]
 };
 
+// Automatically calculates the active season string based on today's date
+// - EPL runs Aug -> May (e.g. Nov 2026 => "2026-27", Aug 2027 => "2027-28")
+// - NRL & AFL run Mar -> Oct (Nov/Dec switches to upcoming year's draw automatically)
+function getActiveSeasonInfo(sportCode) {
+  const now = new Date();
+  const year = now.getUTCFullYear();
+  const month = now.getUTCMonth() + 1; // 1..12
+
+  if (sportCode === 'EPL') {
+    const startYear = month >= 7 ? year : year - 1;
+    const endShort = String(startYear + 1).slice(-2);
+    return {
+      label: `${startYear}-${endShort}`,
+      sportsDbSeason: `${startYear}-${startYear + 1}`,
+      openFootballSlug: `${startYear}-${endShort}`,
+    };
+  }
+
+  // For NRL & AFL: from November onwards, target the upcoming calendar year's season
+  const targetYear = month >= 11 ? year + 1 : year;
+  return {
+    label: String(targetYear),
+    sportsDbSeason: String(targetYear),
+  };
+}
+
+const SPORTSDB_LEAGUE_IDS = {
+  EPL: '4328',
+  NRL: '4416',
+  AFL: '4456',
+};
+
+const TEAM_NAME_ALIASES = {
+  // NRL
+  'brisbane broncos': 'BRI', 'broncos': 'BRI',
+  'canberra raiders': 'CAN', 'raiders': 'CAN',
+  'canterbury-bankstown bulldogs': 'CBY', 'canterbury bulldogs': 'CBY', 'bulldogs': 'CBY',
+  'cronulla-sutherland sharks': 'CRO', 'cronulla sharks': 'CRO', 'sharks': 'CRO',
+  'dolphins': 'DOL', 'redcliffe dolphins': 'DOL',
+  'gold coast titans': 'GLD', 'titans': 'GLD',
+  'manly warringah sea eagles': 'MAN', 'manly sea eagles': 'MAN', 'sea eagles': 'MAN',
+  'melbourne storm': 'MST', 'storm': 'MST',
+  'new zealand warriors': 'NZW', 'nz warriors': 'NZW', 'warriors': 'NZW',
+  'newcastle knights': 'NCL', 'knights': 'NCL',
+  'north queensland cowboys': 'NQL', 'cowboys': 'NQL',
+  'parramatta eels': 'PAR', 'eels': 'PAR',
+  'penrith panthers': 'PEN', 'panthers': 'PEN',
+  'south sydney rabbitohs': 'SOU', 'rabbitohs': 'SOU',
+  'st. george illawarra dragons': 'SGI', 'st george illawarra dragons': 'SGI', 'dragons': 'SGI',
+  'sydney roosters': 'SYR', 'roosters': 'SYR',
+  'wests tigers': 'WST', 'tigers': 'WST',
+
+  // AFL
+  'adelaide crows': 'ADE', 'adelaide': 'ADE',
+  'brisbane lions': 'BRL', 'brisbane': 'BRL',
+  'carlton blues': 'CAR', 'carlton': 'CAR',
+  'collingwood magpies': 'COL', 'collingwood': 'COL',
+  'essendon bombers': 'ESS', 'essendon': 'ESS',
+  'fremantle dockers': 'FRE', 'fremantle': 'FRE',
+  'geelong cats': 'GEE', 'geelong': 'GEE',
+  'gold coast suns': 'GCS', 'gold coast': 'GCS',
+  'gws giants': 'GWS', 'greater western sydney giants': 'GWS', 'gws': 'GWS',
+  'hawthorn hawks': 'HAW', 'hawthorn': 'HAW',
+  'melbourne demons': 'MEL', 'melbourne': 'MEL',
+  'north melbourne kangaroos': 'NTH', 'north melbourne': 'NTH',
+  'port adelaide power': 'PTA', 'port adelaide': 'PTA',
+  'richmond tigers': 'RIC', 'richmond': 'RIC',
+  'st kilda saints': 'STK', 'st kilda': 'STK', 'st. kilda': 'STK',
+  'sydney swans': 'SYD', 'sydney': 'SYD',
+  'west coast eagles': 'WCE', 'west coast': 'WCE',
+  'western bulldogs': 'WBD', 'footscray': 'WBD',
+
+  // EPL
+  'afc bournemouth': 'BOU', 'bournemouth': 'BOU',
+  'arsenal': 'ARS', 'arsenal fc': 'ARS',
+  'aston villa': 'AVL', 'aston villa fc': 'AVL',
+  'brentford': 'BRE', 'brentford fc': 'BRE',
+  'brighton & hove albion': 'BHA', 'brighton and hove albion': 'BHA', 'brighton & hove albion fc': 'BHA', 'brighton': 'BHA',
+  'chelsea': 'CHE', 'chelsea fc': 'CHE',
+  'coventry city': 'COV', 'coventry city fc': 'COV', 'coventry': 'COV',
+  'crystal palace': 'CRY', 'crystal palace fc': 'CRY',
+  'everton': 'EVE', 'everton fc': 'EVE',
+  'fulham': 'FUL', 'fulham fc': 'FUL',
+  'hull city': 'HUL', 'hull city afc': 'HUL', 'hull': 'HUL',
+  'ipswich town': 'IPS', 'ipswich town fc': 'IPS', 'ipswich': 'IPS',
+  'leeds united': 'LEE', 'leeds united fc': 'LEE', 'leeds': 'LEE',
+  'liverpool': 'LIV', 'liverpool fc': 'LIV',
+  'manchester city': 'MCI', 'manchester city fc': 'MCI', 'man city': 'MCI',
+  'manchester united': 'MUN', 'manchester united fc': 'MUN', 'man united': 'MUN', 'man utd': 'MUN',
+  'newcastle united': 'NEW', 'newcastle united fc': 'NEW', 'newcastle': 'NEW',
+  'nottingham forest': 'NFO', 'nottingham forest fc': 'NFO', "nott'm forest": 'NFO',
+  'sunderland': 'SUN', 'sunderland afc': 'SUN',
+  'tottenham hotspur': 'TOT', 'tottenham hotspur fc': 'TOT', 'tottenham': 'TOT', 'spurs': 'TOT',
+};
+
+function resolveTeamShortCode(rawName, teamsList) {
+  if (!rawName) return null;
+  const cleaned = rawName.trim().toLowerCase();
+  if (TEAM_NAME_ALIASES[cleaned]) return TEAM_NAME_ALIASES[cleaned];
+
+  const exactMatch = teamsList.find(
+    (t) =>
+      t.name.toLowerCase() === cleaned ||
+      t.short_code.toLowerCase() === cleaned
+  );
+  if (exactMatch) return exactMatch.short_code;
+
+  const partialMatch = teamsList.find(
+    (t) =>
+      cleaned.includes(t.name.toLowerCase()) ||
+      t.name.toLowerCase().includes(cleaned)
+  );
+  return partialMatch ? partialMatch.short_code : null;
+}
+
 const LAST_LEAGUE_STORAGE_KEY = 'lms_last_active_league_id';
 
 function formatLocalKickoff(dateObj) {
@@ -117,8 +234,6 @@ function getDefaultRoundKickoffUTC(sport, roundNumber, dbSchedules) {
   return base;
 }
 
-// Symmetrical circle-method round-robin generator:
-// Guarantees every team plays at most once per round and Home vs Away is 100% reciprocal.
 function buildRoundMatchups(teamsList, sportCode, roundNumber, dbFixtures, dbSchedules) {
   if (!teamsList || teamsList.length < 2) {
     return { matches: [], byeTeam: null };
@@ -129,7 +244,7 @@ function buildRoundMatchups(teamsList, sportCode, roundNumber, dbFixtures, dbSch
     (f) => Number(f.round_number) === Number(roundNumber)
   );
 
-  // 1. Use official DB fixtures if present for this round
+  // 1. Use official synced DB fixtures if present for this round
   if (roundDbFixtures.length > 0) {
     const usedIds = new Set();
     const matches = [];
@@ -158,13 +273,12 @@ function buildRoundMatchups(teamsList, sportCode, roundNumber, dbFixtures, dbSch
   const pool = [...teamsList];
   const hasBye = pool.length % 2 === 1;
   if (hasBye) {
-    pool.push(null); // Bye placeholder
+    pool.push(null);
   }
 
   const n = pool.length;
   const r = (Number(roundNumber) - 1) % (n - 1);
 
-  // Circle rotation: keep pool[0] fixed, rotate pool[1..n-1]
   const rotated = [pool[0]];
   for (let i = 1; i < n; i++) {
     const idx = 1 + ((i - 1 + r) % (n - 1));
@@ -188,26 +302,22 @@ function buildRoundMatchups(teamsList, sportCode, roundNumber, dbFixtures, dbSch
       continue;
     }
 
-    // Alternate home/away cleanly each round
     const flipHome = (Number(roundNumber) + i) % 2 === 1;
     const home = flipHome ? teamB : teamA;
     const away = flipHome ? teamA : teamB;
 
     const kickoffUTC = new Date(roundStartUTC.getTime());
     if (sportCode === 'EPL') {
-      // Realistic weekend kickoffs: Sat 12:30, Sat 15:00 (x5), Sat 17:30, Sun 14:00 (x2), Sun 16:30 UTC
       const eplOffsets = [-2.5, 0, 0, 0, 0, 0, 2.5, 23, 23, 25.5];
       kickoffUTC.setTime(
         roundStartUTC.getTime() + eplOffsets[i % eplOffsets.length] * 3600 * 1000
       );
     } else if (sportCode === 'NRL') {
-      // Thu night, Fri 6pm, Fri 8pm, Sat 3pm, Sat 5:30pm, Sat 7:35pm, Sun 2pm, Sun 4:05pm
       const nrlOffsets = [-47, -26, -24, -4, -1.5, 0.5, 19, 21];
       kickoffUTC.setTime(
         roundStartUTC.getTime() + nrlOffsets[i % nrlOffsets.length] * 3600 * 1000
       );
     } else {
-      // AFL: Thu night, Fri night, Sat afternoon/twilight/night, Sun afternoon/twilight
       const aflOffsets = [-47.5, -24.5, -5.5, -2.5, 0.5, 0.5, 18, 20.5, 22];
       kickoffUTC.setTime(
         roundStartUTC.getTime() + aflOffsets[i % aflOffsets.length] * 3600 * 1000
@@ -274,13 +384,14 @@ export default function App() {
   const [roundSchedules, setRoundSchedules] = useState({});
   const [currentRound, setCurrentRound] = useState(1);
   const [loading, setLoading] = useState(false);
+  const [syncingFixtures, setSyncingFixtures] = useState(false);
   const [pickBusy, setPickBusy] = useState(false);
   const [statusMessage, setStatusMessage] = useState('');
 
   const LEAGUE_CONFIG = {
     NRL: { name: 'National Rugby League', defaultRound: 1 },
     AFL: { name: 'Australian Football League', defaultRound: 1 },
-    EPL: { name: 'English Premier League', defaultRound: 1 },
+    EPL: { name: 'English Premier League', defaultRound: 11 },
   };
 
   const userTimeZone = Intl.DateTimeFormat().resolvedOptions().timeZone || 'Local Time';
@@ -290,7 +401,6 @@ export default function App() {
     return () => clearInterval(timer);
   }, []);
 
-  // Build current round's 100% symmetrical head-to-head matchups
   const { matches: roundMatches, byeTeam: roundByeTeam } = buildRoundMatchups(
     teams,
     activeEntry?.league || 'NRL',
@@ -299,7 +409,6 @@ export default function App() {
     roundSchedules
   );
 
-  // First kickoff of a round determines when that round locks and reveals everyone's picks
   const getRoundFirstKickoff = (roundNum) => {
     const sportCode = activeEntry?.league || 'NRL';
     const { matches } = buildRoundMatchups(
@@ -320,6 +429,148 @@ export default function App() {
     return nowTick >= firstKickoff.getTime();
   };
 
+  // =========================================================================
+  // AUTOMATIC LIVE FIXTURES SYNC (Auto-detects active season & pulls full schedule)
+  // =========================================================================
+  const syncLiveFixtures = async (sportOverride, teamsOverride, silent = false) => {
+    const sportCode = sportOverride || activeEntry?.league || 'EPL';
+    const activeTeamsList = teamsOverride || teams;
+    const seasonInfo = getActiveSeasonInfo(sportCode);
+
+    if (syncingFixtures) return;
+
+    setSyncingFixtures(true);
+    if (!silent) {
+      setStatusMessage(
+        `Syncing ${sportCode} ${seasonInfo.label} fixtures from live feed...`
+      );
+    }
+
+    try {
+      const rowsMap = new Map();
+
+      // 1. For EPL: Pull complete 380-match schedule from openfootball/football.json (free, zero rate limits)
+      if (sportCode === 'EPL' && seasonInfo.openFootballSlug) {
+        try {
+          const ofUrl = `https://raw.githubusercontent.com/openfootball/football.json/master/${seasonInfo.openFootballSlug}/en.1.json`;
+          const ofRes = await fetch(ofUrl);
+          if (ofRes.ok) {
+            const ofJson = await ofRes.json();
+            const matchesList = ofJson?.matches || [];
+            matchesList.forEach((m) => {
+              const roundMatch = String(m.round || '').match(/(\d+)/);
+              const roundNum = roundMatch ? Number(roundMatch[1]) : null;
+              if (!roundNum) return;
+
+              const homeCode = resolveTeamShortCode(m.team1, activeTeamsList);
+              const awayCode = resolveTeamShortCode(m.team2, activeTeamsList);
+              if (!homeCode || !awayCode || homeCode === awayCode) return;
+
+              const timeStr = (m.time || '15:00').slice(0, 5);
+              const parsed = new Date(`${m.date}T${timeStr}:00Z`);
+              if (isNaN(parsed.getTime())) return;
+
+              rowsMap.set(`${sportCode}-${roundNum}-${homeCode}`, {
+                sport: sportCode,
+                round_number: roundNum,
+                home_short_code: homeCode,
+                away_short_code: awayCode,
+                kickoff_utc: parsed.toISOString(),
+              });
+            });
+          }
+        } catch {
+          // Fall through to TheSportsDB if GitHub raw is unreachable
+        }
+      }
+
+      // 2. Also query TheSportsDB for NRL, AFL, and any EPL kickoff time updates
+      const leagueId = SPORTSDB_LEAGUE_IDS[sportCode];
+      if (leagueId) {
+        const tsdbUrl = `https://www.thesportsdb.com/api/v1/json/123/eventsseason.php?id=${leagueId}&s=${seasonInfo.sportsDbSeason}`;
+        const res = await fetch(tsdbUrl);
+        if (res.ok) {
+          const json = await res.json();
+          const events = json?.events || [];
+
+          events.forEach((ev) => {
+            const roundNum = Number(ev.intRound);
+            if (!roundNum || isNaN(roundNum)) return;
+
+            const homeCode = resolveTeamShortCode(ev.strHomeTeam, activeTeamsList);
+            const awayCode = resolveTeamShortCode(ev.strAwayTeam, activeTeamsList);
+            if (!homeCode || !awayCode || homeCode === awayCode) return;
+
+            let kickoffISO = null;
+            if (ev.strTimestamp) {
+              const parsed = new Date(
+                ev.strTimestamp.endsWith('Z') ? ev.strTimestamp : `${ev.strTimestamp}Z`
+              );
+              if (!isNaN(parsed.getTime())) kickoffISO = parsed.toISOString();
+            } else if (ev.dateEvent) {
+              const timePart = (ev.strTime || '15:00:00').slice(0, 8);
+              const parsed = new Date(`${ev.dateEvent}T${timePart}Z`);
+              if (!isNaN(parsed.getTime())) kickoffISO = parsed.toISOString();
+            }
+
+            if (!kickoffISO) return;
+
+            rowsMap.set(`${sportCode}-${roundNum}-${homeCode}`, {
+              sport: sportCode,
+              round_number: roundNum,
+              home_short_code: homeCode,
+              away_short_code: awayCode,
+              kickoff_utc: kickoffISO,
+            });
+          });
+        }
+      }
+
+      const upsertRows = Array.from(rowsMap.values());
+
+      if (upsertRows.length === 0) {
+        if (!silent) {
+          setStatusMessage(
+            `No official ${sportCode} ${seasonInfo.label} draw published yet—using symmetrical round-robin schedule until draw release.`
+          );
+        }
+        return;
+      }
+
+      const { error } = await supabase
+        .from('fixtures')
+        .upsert(upsertRows, { onConflict: 'sport,round_number,home_short_code' });
+
+      if (error) {
+        if (!silent) {
+          setStatusMessage(`Error saving synced fixtures: ${error.message}`);
+        }
+        return;
+      }
+
+      const { data: freshFixtures } = await supabase
+        .from('fixtures')
+        .select('*')
+        .eq('sport', sportCode);
+
+      if (freshFixtures) {
+        setDbFixtures(freshFixtures);
+      }
+
+      if (!silent) {
+        setStatusMessage(
+          `Synced ${upsertRows.length} live ${sportCode} (${seasonInfo.label}) fixtures!`
+        );
+      }
+    } catch (err) {
+      if (!silent) {
+        setStatusMessage(`Fixture sync failed: ${err?.message || 'Network error'}`);
+      }
+    } finally {
+      setSyncingFixtures(false);
+    }
+  };
+
   const openSavedLeague = (membership, playerName) => {
     if (!membership?.leagues) return;
     localStorage.setItem(LAST_LEAGUE_STORAGE_KEY, membership.league_id);
@@ -327,6 +578,7 @@ export default function App() {
     setActiveTab('picks');
     setActiveEntry({
       league: membership.leagues.sport || 'NRL',
+      season: membership.leagues.season || getActiveSeasonInfo(membership.leagues.sport || 'NRL').label,
       totalLives: membership.leagues.starting_lives || 1,
       remainingLives: membership.lives,
       compName: membership.leagues.name,
@@ -529,11 +781,12 @@ export default function App() {
         supabase.from('fixtures').select('*').eq('sport', sportCode)
       ]);
 
-      if (!teamsRes.error && teamsRes.data && teamsRes.data.length > 0) {
-        setTeams(teamsRes.data);
-      } else {
-        setTeams(FALLBACK_TEAMS[sportCode] || []);
-      }
+      const resolvedTeams =
+        !teamsRes.error && teamsRes.data && teamsRes.data.length > 0
+          ? teamsRes.data
+          : FALLBACK_TEAMS[sportCode] || [];
+
+      setTeams(resolvedTeams);
 
       if (!schedRes.error && schedRes.data) {
         const map = {};
@@ -557,6 +810,9 @@ export default function App() {
       if (activeEntry.compId) {
         await refreshLeagueBoard(activeEntry.compId);
       }
+
+      // Automatically fetch & update live fixtures in the background whenever a league opens
+      syncLiveFixtures(sportCode, resolvedTeams, true);
 
       setLoading(false);
     }
@@ -731,7 +987,7 @@ export default function App() {
     }
   };
 
-  // Create League in 'leagues' table + auto-join creator in 'league_members'
+  // Create League tagged automatically with the active season
   const handleCreateCompetition = async (e) => {
     e.preventDefault();
     setFormError('');
@@ -742,6 +998,7 @@ export default function App() {
     }
 
     const generatedCode = Math.random().toString(36).substring(2, 8).toUpperCase();
+    const activeSeasonLabel = getActiveSeasonInfo(formSport).label;
 
     const { data: comp, error: compErr } = await supabase
       .from('leagues')
@@ -749,6 +1006,7 @@ export default function App() {
         {
           name: formCompName.trim(),
           sport: formSport,
+          season: activeSeasonLabel,
           invite_code: generatedCode,
           starting_lives: formLives,
           created_by: session.user.id
@@ -782,6 +1040,7 @@ export default function App() {
     setActiveTab('picks');
     setActiveEntry({
       league: comp.sport || formSport,
+      season: comp.season || activeSeasonLabel,
       totalLives: comp.starting_lives,
       remainingLives: comp.starting_lives,
       compName: comp.name,
@@ -835,6 +1094,7 @@ export default function App() {
     setActiveTab('picks');
     setActiveEntry({
       league: comp.sport || 'NRL',
+      season: comp.season || getActiveSeasonInfo(comp.sport || 'NRL').label,
       totalLives: comp.starting_lives,
       remainingLives: comp.starting_lives,
       compName: comp.name,
@@ -1058,7 +1318,7 @@ export default function App() {
   }
 
   const isSidebarOpen = sidebarHovered || sidebarPinned;
-  const maxRoundDisplay = Math.max(currentRound + 3, 12);
+  const maxRoundDisplay = Math.max(currentRound + 3, 15);
   const horizontalRounds = Array.from({ length: maxRoundDisplay }, (_, i) => i + 1);
   const currentRoundKickoff = activeEntry ? getRoundFirstKickoff(currentRound) : null;
 
@@ -1172,7 +1432,7 @@ export default function App() {
                     <div className="truncate text-left">
                       <div className="truncate">{m.leagues?.name}</div>
                       <div className="text-[10px] text-slate-500">
-                        {m.leagues?.sport || 'NRL'} • Code: {m.leagues?.invite_code}
+                        {m.leagues?.sport || 'NRL'} {m.leagues?.season || ''} • {m.leagues?.invite_code}
                       </div>
                     </div>
                     <span className="text-rose-400 flex items-center gap-1 shrink-0">
@@ -1306,7 +1566,7 @@ export default function App() {
                 <div>
                   <h1 className="text-xl font-black">Welcome, {profile?.username || 'Player'}</h1>
                   <p className="text-slate-400 text-xs">
-                    Open a saved league, create a new comp, or join with an invite code
+                    Open a saved league, create a new season comp, or join with an invite code
                   </p>
                 </div>
               </div>
@@ -1351,7 +1611,7 @@ export default function App() {
                           <div className="flex items-center gap-2">
                             <span className="font-bold text-sm text-white">{m.leagues?.name}</span>
                             <span className="text-[10px] font-bold px-2 py-0.5 rounded bg-slate-800 text-blue-300">
-                              {m.leagues?.sport || 'NRL'}
+                              {m.leagues?.sport || 'NRL'} {m.leagues?.season || ''}
                             </span>
                           </div>
                           <div className="text-[11px] text-slate-400 font-mono mt-0.5">
@@ -1380,24 +1640,32 @@ export default function App() {
 
               {setupStep === 'league' ? (
                 <div className="space-y-2">
-                  {Object.entries(LEAGUE_CONFIG).map(([code, config]) => (
-                    <button
-                      key={code}
-                      onClick={() => {
-                        setSelectedLeague(code);
-                        setSetupStep('lives');
-                      }}
-                      className="w-full flex items-center justify-between p-3 rounded-xl bg-slate-950/60 border border-slate-800 hover:border-blue-500 hover:bg-slate-800 transition group text-left"
-                    >
-                      <div>
-                        <div className="font-bold text-base text-white group-hover:text-blue-400 transition">
-                          {code}
+                  {Object.entries(LEAGUE_CONFIG).map(([code, config]) => {
+                    const seasonLabel = getActiveSeasonInfo(code).label;
+                    return (
+                      <button
+                        key={code}
+                        onClick={() => {
+                          setSelectedLeague(code);
+                          setSetupStep('lives');
+                        }}
+                        className="w-full flex items-center justify-between p-3 rounded-xl bg-slate-950/60 border border-slate-800 hover:border-blue-500 hover:bg-slate-800 transition group text-left"
+                      >
+                        <div>
+                          <div className="flex items-center gap-2">
+                            <span className="font-bold text-base text-white group-hover:text-blue-400 transition">
+                              {code}
+                            </span>
+                            <span className="text-[10px] font-bold px-2 py-0.5 rounded bg-slate-800 text-slate-300">
+                              {seasonLabel}
+                            </span>
+                          </div>
+                          <div className="text-xs text-slate-400">{config.name}</div>
                         </div>
-                        <div className="text-xs text-slate-400">{config.name}</div>
-                      </div>
-                      <ChevronRight className="w-4 h-4 text-slate-500" />
-                    </button>
-                  ))}
+                        <ChevronRight className="w-4 h-4 text-slate-500" />
+                      </button>
+                    );
+                  })}
                 </div>
               ) : (
                 <div className="space-y-4">
@@ -1419,6 +1687,7 @@ export default function App() {
                         onClick={() =>
                           setActiveEntry({
                             league: selectedLeague,
+                            season: getActiveSeasonInfo(selectedLeague).label,
                             totalLives: count,
                             remainingLives: count
                           })
@@ -1449,7 +1718,8 @@ export default function App() {
                 <div className="flex items-center gap-2 text-[11px] font-bold text-slate-400 uppercase tracking-wider">
                   <Trophy className="w-3.5 h-3.5 text-amber-400" />
                   <span>
-                    {activeEntry.compName || `${activeEntry.league} Solo`} • {activeEntry.league}
+                    {activeEntry.compName || `${activeEntry.league} Solo`} • {activeEntry.league}{' '}
+                    {activeEntry.season}
                   </span>
                   {activeEntry.inviteCode && (
                     <span className="font-mono text-amber-400 bg-slate-950 px-1.5 py-0.5 rounded border border-slate-800">
@@ -1519,7 +1789,6 @@ export default function App() {
             {/* TAB 1: HEAD-TO-HEAD MATCHUPS (HOME vs AWAY) */}
             {activeTab === 'picks' ? (
               <>
-                {/* Round Selector + Clear Pick Controls */}
                 <div className="flex flex-wrap items-center justify-between bg-slate-900/80 border border-slate-800 px-4 py-2.5 rounded-xl gap-3">
                   <div className="flex items-center gap-2.5">
                     <Calendar className="w-4 h-4 text-blue-400" />
@@ -1531,7 +1800,22 @@ export default function App() {
                     </span>
                   </div>
 
-                  <div className="flex items-center gap-2">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <button
+                      type="button"
+                      disabled={syncingFixtures}
+                      onClick={() => syncLiveFixtures(activeEntry.league, teams, false)}
+                      className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 disabled:opacity-50 border border-slate-700 text-xs font-bold text-slate-200 transition"
+                      title="Refresh official fixture dates and kickoff times"
+                    >
+                      <RefreshCw
+                        className={`w-3.5 h-3.5 text-blue-400 ${
+                          syncingFixtures ? 'animate-spin' : ''
+                        }`}
+                      />
+                      <span>{syncingFixtures ? 'Syncing...' : 'Sync Fixtures'}</span>
+                    </button>
+
                     {activeRoundPick && !isCurrentRoundLocked && (
                       <button
                         type="button"
@@ -1576,7 +1860,7 @@ export default function App() {
                   </div>
                 </div>
 
-                {/* Head-to-Head Matchup Cards: Home Team (Left) vs Away Team (Right) + Kickoff Underneath */}
+                {/* Head-to-Head Matchup Cards */}
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
                   {roundMatches.map((match) => {
                     const { home, away, kickoffUTC } = match;
@@ -1604,7 +1888,6 @@ export default function App() {
                             : 'border-slate-800'
                         }`}
                       >
-                        {/* Top Row: Home Team | v | Away Team */}
                         <div className="grid grid-cols-[1fr_auto_1fr] items-stretch">
                           {/* HOME TEAM BUTTON (LEFT) */}
                           <button
@@ -1754,7 +2037,7 @@ export default function App() {
                   })}
                 </div>
 
-                {/* Bye Club Notice (For odd-numbered leagues like 17-team NRL) */}
+                {/* Bye Club Notice */}
                 {roundByeTeam && (
                   <div className="bg-slate-900/60 border border-slate-800 rounded-xl px-4 py-2.5 flex items-center justify-between text-xs text-slate-400">
                     <div className="flex items-center gap-2.5">
@@ -1978,7 +2261,7 @@ export default function App() {
               <div>
                 <h3 className="font-black text-lg text-white">Create Custom League</h3>
                 <p className="text-xs text-slate-400">
-                  Generates a unique invite code to share with friends
+                  Generates a unique invite code for the {getActiveSeasonInfo(formSport).label} season
                 </p>
               </div>
             </div>
@@ -1997,7 +2280,7 @@ export default function App() {
                 </label>
                 <input
                   type="text"
-                  placeholder="e.g. Work Mates LMS 2026"
+                  placeholder={`e.g. Work Mates LMS ${getActiveSeasonInfo(formSport).label}`}
                   value={formCompName}
                   onChange={(e) => setFormCompName(e.target.value)}
                   className="w-full bg-slate-950 border border-slate-800 rounded-xl p-3 text-sm text-white placeholder-slate-600 focus:outline-none focus:border-blue-500"
@@ -2020,7 +2303,7 @@ export default function App() {
                           : 'bg-slate-950 border-slate-800 text-slate-400 hover:text-white'
                       }`}
                     >
-                      {sport}
+                      {sport} ({getActiveSeasonInfo(sport).label})
                     </button>
                   ))}
                 </div>
@@ -2055,7 +2338,7 @@ export default function App() {
                 type="submit"
                 className="w-full py-3 bg-blue-600 hover:bg-blue-500 text-white font-bold text-sm rounded-xl transition shadow-lg mt-2"
               >
-                Create & Join League
+                Create & Join {getActiveSeasonInfo(formSport).label} League
               </button>
             </form>
           </div>
@@ -2086,4 +2369,36 @@ export default function App() {
             </div>
 
             {formError && (
-              <div className="p-3 mb-4 bg-rose-950/50 border border-rose-800 text-rose-3
+              <div className="p-3 mb-4 bg-rose-950/50 border border-rose-800 text-rose-300 text-xs rounded-lg flex items-center gap-2">
+                <AlertCircle className="w-4 h-4 shrink-0" />
+                <span>{formError}</span>
+              </div>
+            )}
+
+            <form onSubmit={handleJoinCompetition} className="space-y-4">
+              <div>
+                <label className="text-xs font-bold uppercase tracking-wider text-slate-400 block mb-1">
+                  Invite Code
+                </label>
+                <input
+                  type="text"
+                  placeholder="e.g. A8F3K2"
+                  value={formInviteCode}
+                  onChange={(e) => setFormInviteCode(e.target.value)}
+                  className="w-full bg-slate-950 border border-slate-800 rounded-xl p-3 text-sm font-mono uppercase text-white placeholder-slate-600 focus:outline-none focus:border-emerald-500"
+                />
+              </div>
+
+              <button
+                type="submit"
+                className="w-full py-3 bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-sm rounded-xl transition shadow-lg mt-2"
+              >
+                Join League
+              </button>
+            </form>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
